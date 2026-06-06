@@ -246,7 +246,10 @@ main { padding: 30px 0 56px; }
 }
 .factor-chip.up   { background: var(--good-soft); color: var(--good); }
 .factor-chip.down { background: var(--bad-soft);  color: var(--bad); }
-.factor-msg { flex: 1; }
+.factor-body { flex: 1; }
+.factor-msg { font-weight: 500; color: var(--ink); }
+.factor-action { margin-top: 4px; font-size: 13px; color: var(--ink-2); line-height: 1.45; }
+.factor-action::before { content: "→ "; color: var(--accent); font-weight: 700; }
 .factor.empty-factor { color: var(--muted); font-size: 13.5px; }
 
 /* ---------- charts ---------- */

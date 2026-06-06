@@ -74,6 +74,26 @@ CORRELATION_FACTORS = [
     ("resting_hr", "resting heart rate"),
 ]
 
+# Practical, do-this-tonight takeaways per factor (shown next to each insight).
+FACTOR_ACTIONS = {
+    "hrv_overnight": "Usually the strongest signal. Check HRV each morning as a "
+        "read on how recovered you are, and protect it: steady wind-down, and "
+        "go easy on late alcohol and hard late workouts.",
+    "resting_hr": "A higher-than-usual resting HR (often late meals, alcohol, "
+        "illness or a stressful day) is an early warning — on those days wind "
+        "down earlier and skip the nightcap.",
+    "body_battery_high": "A higher daytime Body Battery peak means more in the "
+        "recovery tank. Defend it with real breaks during the day, not just at night.",
+    "body_battery_low": "Running the tank to empty by evening tracks with rougher "
+        "nights — build in recovery breaks so you don't bottom out.",
+    "stress_avg": "On high-stress days, schedule a genuine buffer before bed — a "
+        "walk, breathing, and no work or screens in the last hour.",
+    "respiration_avg": "Elevated overnight breathing often follows alcohol, late "
+        "meals or stress — watch it alongside those habits.",
+    "steps": "Step count barely moves your sleep, so don't chase a step goal for "
+        "sleep's sake — put that energy into the recovery signals instead.",
+}
+
 DISCLAIMER = (
     "This tool offers general, evidence-based guidance only and does NOT "
     "provide a diagnosis."
@@ -207,6 +227,10 @@ def all_entries(conn):
         d["_date"] = parse_date(d["date"])
         d["tib_min"] = time_in_bed_min(bt, wt)
         d["efficiency"] = sleep_efficiency(d["total_sleep_min"], d["tib_min"])
+        # restless moments is a raw count that grows with time in bed; the
+        # per-hour rate is what's comparable across nights of different length.
+        d["restless_per_hr"] = (round(d["restless_moments"] / (d["tib_min"] / 60), 2)
+                                if d["tib_min"] else 0.0)
         out.append(d)
     return out
 
@@ -585,7 +609,7 @@ def correlate(entries, outcome="efficiency", min_n=5):
     ('efficiency' or 'restless'). Returns a list of dicts sorted by |r|,
     strongest first, only for factors with at least `min_n` paired nights.
     """
-    okey = "efficiency" if outcome == "efficiency" else "restless_moments"
+    okey = "efficiency" if outcome == "efficiency" else "restless_per_hr"
     results = []
     for col, label in CORRELATION_FACTORS:
         pairs = [(e.get(col), e.get(okey)) for e in entries
@@ -601,6 +625,7 @@ def correlate(entries, outcome="efficiency", min_n=5):
             "column": col, "label": label, "n": len(pairs), "r": round(r, 2),
             "strength": _strength(r), "outcome": outcome,
             "message": _factor_message(label, r, len(pairs), outcome),
+            "action": FACTOR_ACTIONS.get(col, ""),
         })
     results.sort(key=lambda d: abs(d["r"]), reverse=True)
     return results
@@ -1082,6 +1107,8 @@ def cmd_correlate(conn, args):
             print("")
             for r in rows[:3]:
                 print(f"  • {r['message']}")
+                if r["action"]:
+                    print(f"      → {r['action']}")
         print("")
     print("Correlation is not causation, and small samples are noisy — treat "
           "these as hints to explore, not conclusions.")

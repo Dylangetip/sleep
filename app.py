@@ -66,6 +66,12 @@ def _public_entry(e):
         "notes": e["notes"],
         "tib_min": e["tib_min"],
         "efficiency": round(e["efficiency"], 1),
+        "steps": e["steps"],
+        "stress_avg": e["stress_avg"],
+        "body_battery_high": e["body_battery_high"],
+        "body_battery_low": e["body_battery_low"],
+        "hrv_overnight": e["hrv_overnight"],
+        "respiration_avg": e["respiration_avg"],
     }
 
 

@@ -223,9 +223,11 @@
     }
     items.slice(0, 6).forEach(function (f) {
       var dir = f.r > 0 ? "up" : "down";
+      var body = [ el("div", { class: "factor-msg", text: f.message }) ];
+      if (f.action) body.push(el("div", { class: "factor-action", text: f.action }));
       ul.appendChild(el("li", { class: "factor" }, [
         el("span", { class: "factor-chip " + dir, text: (f.r > 0 ? "+" : "") + f.r.toFixed(2) }),
-        el("span", { class: "factor-msg", text: f.message })
+        el("div", { class: "factor-body" }, body)
       ]));
     });
   }
@@ -264,6 +266,9 @@
         el("td", { class: "num", text: String(e.restless_moments) }),
         el("td", { class: "num", text: e.awakenings == null ? "—" : String(e.awakenings) }),
         el("td", { class: "num", text: e.resting_hr == null ? "—" : e.resting_hr + " bpm" }),
+        el("td", { class: "num", text: e.steps == null ? "—" : e.steps.toLocaleString() }),
+        el("td", { class: "num", text: e.stress_avg == null ? "—" : String(e.stress_avg) }),
+        el("td", { class: "num", text: e.hrv_overnight == null ? "—" : Math.round(e.hrv_overnight) + " ms" }),
         el("td", {}, [ (function () {
           var b = el("button", { class: "del-btn", title: "Delete this night", html: "&times;" });
           b.addEventListener("click", function () { onDelete(e.date); });
