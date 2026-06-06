@@ -1022,7 +1022,10 @@ def cmd_sync_garmin(conn, args):
     def _ts_to_time(ms):
         if not ms:
             return None
-        return datetime.fromtimestamp(ms / 1000).time()
+        # Garmin's *Local timestamps encode local wall-clock time as ms since
+        # the epoch (already offset). Decode with utcfromtimestamp so we don't
+        # apply this machine's timezone offset a second time.
+        return datetime.utcfromtimestamp(ms / 1000).time()
 
     bed = _ts_to_time(dto.get("sleepStartTimestampLocal"))
     wake = _ts_to_time(dto.get("sleepEndTimestampLocal"))
