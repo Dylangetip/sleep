@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sleep Tracker · CBT-I companion</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- ===== top bar ===== -->
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <div class="brand">
+        <span class="mark" aria-hidden="true"></span>
+        <span>
+          <div class="brand-name">Rested</div>
+          <div class="brand-sub">CBT-I sleep companion</div>
+        </span>
+      </div>
+      <div class="topbar-spacer"></div>
+      <span id="streak-pill" class="demo-pill" style="display:none"></span>
+      <span class="demo-pill" title="This preview runs on a built-in demo backend. The real app is served by FastAPI.">Demo data</span>
+    </div>
+  </header>
+
+  <main class="wrap">
+
+    <!-- ===== HERO: tonight's plan ===== -->
+    <section class="section">
+      <div id="hero" class="hero"></div>
+    </section>
+
+    <!-- ===== stat tiles ===== -->
+    <section class="section">
+      <div id="stat-row" class="stat-row"></div>
+    </section>
+
+    <!-- ===== charts ===== -->
+    <section class="section">
+      <div class="grid cols-12">
+        <div class="card chart-card">
+          <div class="chart-head">
+            <h3>Sleep efficiency</h3>
+            <div class="legend">
+              <span><i style="background:var(--c-eff)"></i>Efficiency</span>
+              <span><i style="background:var(--c-target)"></i>85% target</span>
+            </div>
+          </div>
+          <div class="chart-box"><canvas id="chart-eff"></canvas></div>
+        </div>
+        <div class="card chart-card">
+          <div class="chart-head">
+            <h3>Restless moments</h3>
+            <div class="legend"><span id="restless-trend"></span></div>
+          </div>
+          <div class="chart-box"><canvas id="chart-restless"></canvas></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== two-column: guidance + log ===== -->
+    <section class="section">
+      <div class="grid cols-2">
+
+        <!-- left: nudges, progress, flags -->
+        <div class="grid" style="align-content:start">
+          <div id="flags-wrap" style="display:none"></div>
+
+          <div class="card card-pad">
+            <h3 class="panel-title">Tonight&rsquo;s nudges</h3>
+            <p class="panel-sub">Small, evidence-based adjustments based on your recent nights.</p>
+            <ul id="nudge-list" class="nudge-list"></ul>
+          </div>
+
+          <div class="card card-pad">
+            <h3 class="panel-title">Your progress</h3>
+            <p class="panel-sub">What&rsquo;s going well — momentum matters in CBT-I.</p>
+            <ul id="progress-list" class="progress-list"></ul>
+            <div id="adherence" class="adherence" style="margin-top:14px"></div>
+          </div>
+        </div>
+
+        <!-- right: log form + settings -->
+        <div class="grid" style="align-content:start">
+          <div class="card card-pad">
+            <div class="section-head" style="margin-bottom:16px">
+              <h2 style="font-size:20px">Log a night</h2>
+              <span class="note">Upserts by date</span>
+            </div>
+            <form id="log-form" autocomplete="off">
+              <div class="form-grid">
+                <div class="field">
+                  <label for="form-date">Date</label>
+                  <input type="date" id="form-date" name="date" required />
+                </div>
+                <div class="field">
+                  <label for="form-sleep">Total sleep <span class="opt">(min)</span></label>
+                  <input type="number" id="form-sleep" name="total_sleep_min" min="0" max="900" step="1" placeholder="420" required />
+                </div>
+                <div class="field">
+                  <label for="form-bed">Bedtime</label>
+                  <input type="time" id="form-bed" name="bedtime" required />
+                </div>
+                <div class="field">
+                  <label for="form-wake">Wake time</label>
+                  <input type="time" id="form-wake" name="wake_time" required />
+                  <span class="hint">Prefilled from your fixed wake time.</span>
+                </div>
+                <div class="field">
+                  <label for="form-restless">Restless moments</label>
+                  <input type="number" id="form-restless" name="restless_moments" min="0" max="99" step="1" placeholder="4" />
+                </div>
+                <div class="field">
+                  <label for="form-wakes">Awakenings <span class="opt">(optional)</span></label>
+                  <input type="number" id="form-wakes" name="awakenings" min="0" max="99" step="1" placeholder="2" />
+                </div>
+                <div class="field">
+                  <label for="form-hr">Resting HR <span class="opt">(optional, bpm)</span></label>
+                  <input type="number" id="form-hr" name="resting_hr" min="20" max="200" step="1" placeholder="60" />
+                </div>
+                <div class="field">
+                  <label>&nbsp;</label>
+                  <div style="font-size:12px;color:var(--muted);align-self:center">Time-in-bed &amp; efficiency are computed for you.</div>
+                </div>
+                <div class="field full">
+                  <label for="form-notes">Notes <span class="opt">(optional)</span></label>
+                  <textarea id="form-notes" name="notes" placeholder="How you felt, caffeine, stress, etc."></textarea>
+                </div>
+              </div>
+              <div class="btn-row">
+                <button type="submit" class="btn btn-primary">Save night</button>
+                <span id="form-flash" class="form-flash"></span>
+              </div>
+            </form>
+          </div>
+
+          <div class="card card-pad">
+            <h3 class="panel-title">Settings</h3>
+            <p class="panel-sub">Your fixed wake time anchors the whole prescription. Keep it constant — even on weekends.</p>
+            <form id="wake-form" class="inline-save">
+              <div class="field">
+                <label for="wake-setting">Fixed wake time</label>
+                <input type="time" id="wake-setting" name="wake" />
+              </div>
+              <button type="submit" class="btn btn-ghost">Save</button>
+            </form>
+            <div id="wake-flash" class="form-flash" style="margin-top:8px"></div>
+            <button id="reset-demo" class="btn btn-ghost" style="display:none;margin-top:14px;font-size:12px;padding:7px 12px">Reset demo data</button>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ===== history ===== -->
+    <section class="section">
+      <div class="section-head">
+        <h2>Night history</h2>
+        <span class="note">Newest first</span>
+      </div>
+      <div class="card table-card">
+        <div class="table-scroll">
+          <table id="history-table" class="history">
+            <thead>
+              <tr>
+                <th>Date</th><th>Bedtime</th><th>Wake</th>
+                <th class="num">Slept</th><th class="num">In bed</th><th class="num">Efficiency</th>
+                <th class="num">Restless</th><th class="num">Wakes</th><th class="num">Resting HR</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="history-body"></tbody>
+          </table>
+        </div>
+        <div id="history-empty" class="empty" style="display:none">No nights logged yet. Add your first night above.</div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ===== persistent guardrail ===== -->
+  <footer class="guardrail">
+    <div class="guardrail-inner">
+      <span class="ico" aria-hidden="true">!</span>
+      <span class="txt">
+        <b>General, evidence-based guidance only — not a diagnosis or medical advice.</b>
+        Sleep restriction can cause daytime drowsiness, especially in the first weeks. Take care with driving or operating machinery while sleepy, and consult a clinician for persistent insomnia.
+      </span>
+    </div>
+  </footer>
+
+  <!-- Chart.js (single CDN tag, allowed) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+
+  <!-- DEMO ONLY: in-browser backend so this runs without Python.
+       Remove this one line when serving from FastAPI (app.py). -->
+  <script src="mock-backend.js"></script>
+
+  <!-- frontend app -->
+  <script src="app.js"></script>
+</body>
+</html>
