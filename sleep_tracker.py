@@ -45,6 +45,35 @@ EFF_OK_LOW = 85.0                # 85-90 -> hold; < 85 -> hold/trim + nudges
 
 CONSISTENCY_DRIFT_MIN = 60       # bedtime drift that triggers a consistency nudge
 
+# Core night columns (always present) and optional Garmin health-metric columns
+# (added by migration; nullable). Order matters for upsert.
+CORE_COLUMNS = [
+    "date", "bedtime", "wake_time", "total_sleep_min", "restless_moments",
+    "awakenings", "resting_hr", "notes",
+]
+METRIC_COLUMNS = [
+    ("steps", "INTEGER"),
+    ("stress_avg", "INTEGER"),
+    ("body_battery_high", "INTEGER"),
+    ("body_battery_low", "INTEGER"),
+    ("hrv_overnight", "REAL"),
+    ("respiration_avg", "REAL"),
+]
+METRIC_COLUMN_NAMES = [c for c, _ in METRIC_COLUMNS]
+ALL_COLUMNS = CORE_COLUMNS + METRIC_COLUMN_NAMES
+
+# Factors correlated against sleep (column -> human label). resting_hr is a core
+# column but is a useful daytime/overnight factor too.
+CORRELATION_FACTORS = [
+    ("steps", "daily steps"),
+    ("stress_avg", "average daytime stress"),
+    ("body_battery_high", "Body Battery peak"),
+    ("body_battery_low", "Body Battery low point"),
+    ("hrv_overnight", "overnight HRV"),
+    ("respiration_avg", "overnight breathing rate"),
+    ("resting_hr", "resting heart rate"),
+]
+
 DISCLAIMER = (
     "This tool offers general, evidence-based guidance only and does NOT "
     "provide a diagnosis."
@@ -87,6 +116,12 @@ def init_db(conn):
         );
         """
     )
+    # Migration: add optional health-metric columns if they don't exist yet, so
+    # existing databases pick them up without losing data.
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(entries)")}
+    for col, coltype in METRIC_COLUMNS:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE entries ADD COLUMN {col} {coltype}")
     conn.commit()
 
 
@@ -503,6 +538,74 @@ def restless_trend_struct(entries):
     return {"direction": "flat", "message": "Restlessness has been steady recently."}
 
 
+# --------------------------------------------------------------------------- #
+# Correlation — what daytime/recovery metrics track with sleep
+# --------------------------------------------------------------------------- #
+
+
+def _pearson(xs, ys):
+    """Pearson correlation coefficient, or None if undefined."""
+    n = len(xs)
+    if n < 3:
+        return None
+    mx, my = sum(xs) / n, sum(ys) / n
+    sx = sum((x - mx) ** 2 for x in xs)
+    sy = sum((y - my) ** 2 for y in ys)
+    if sx == 0 or sy == 0:
+        return None
+    cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    return cov / ((sx * sy) ** 0.5)
+
+
+def _strength(r):
+    a = abs(r)
+    if a >= 0.6:
+        return "strong"
+    if a >= 0.4:
+        return "moderate"
+    if a >= 0.2:
+        return "weak"
+    return "negligible"
+
+
+def _factor_message(label, r, n, outcome):
+    direction = "higher" if r > 0 else "lower"
+    strength = _strength(r)
+    outcome_word = "sleep efficiency" if outcome == "efficiency" else "restlessness"
+    if strength == "negligible":
+        return (f"{label.capitalize()} shows no clear link to {outcome_word} so "
+                f"far (r={r:+.2f}, {n} nights).")
+    return (f"On days with higher {label}, your {outcome_word} tends to be "
+            f"{direction} — a {strength} association (r={r:+.2f}, {n} nights).")
+
+
+def correlate(entries, outcome="efficiency", min_n=5):
+    """
+    Correlate each available health factor against a sleep outcome
+    ('efficiency' or 'restless'). Returns a list of dicts sorted by |r|,
+    strongest first, only for factors with at least `min_n` paired nights.
+    """
+    okey = "efficiency" if outcome == "efficiency" else "restless_moments"
+    results = []
+    for col, label in CORRELATION_FACTORS:
+        pairs = [(e.get(col), e.get(okey)) for e in entries
+                 if e.get(col) is not None and e.get(okey) is not None]
+        if len(pairs) < min_n:
+            continue
+        xs = [p[0] for p in pairs]
+        ys = [p[1] for p in pairs]
+        r = _pearson(xs, ys)
+        if r is None:
+            continue
+        results.append({
+            "column": col, "label": label, "n": len(pairs), "r": round(r, 2),
+            "strength": _strength(r), "outcome": outcome,
+            "message": _factor_message(label, r, len(pairs), outcome),
+        })
+    results.sort(key=lambda d: abs(d["r"]), reverse=True)
+    return results
+
+
 def report_data(conn):
     """
     Everything the CLI `report` shows, as a JSON-serializable dict for the web
@@ -563,6 +666,7 @@ def report_data(conn):
         "doctor_flags": doctor_flags(entries),
         "restless_trend": restless_trend_struct(entries),
         "series_14": series_14,
+        "factors": correlate(entries, "efficiency"),
     }
 
 
@@ -763,23 +867,22 @@ def render_trend(conn):
 
 
 def upsert_entry(conn, e):
+    """
+    Insert or update a night. Core fields overwrite; optional health-metric
+    fields use COALESCE so a later write that omits them (e.g. a manual edit)
+    keeps any metrics that were previously synced from Garmin.
+    """
+    params = {c: e.get(c) for c in ALL_COLUMNS}
+    cols = ", ".join(ALL_COLUMNS)
+    vals = ", ".join(f":{c}" for c in ALL_COLUMNS)
+    set_core = ", ".join(f"{c} = excluded.{c}" for c in CORE_COLUMNS if c != "date")
+    set_metrics = ", ".join(
+        f"{c} = COALESCE(excluded.{c}, entries.{c})" for c in METRIC_COLUMN_NAMES
+    )
     conn.execute(
-        """
-        INSERT INTO entries
-            (date, bedtime, wake_time, total_sleep_min, restless_moments,
-             awakenings, resting_hr, notes)
-        VALUES (:date, :bedtime, :wake_time, :total_sleep_min, :restless_moments,
-                :awakenings, :resting_hr, :notes)
-        ON CONFLICT(date) DO UPDATE SET
-            bedtime          = excluded.bedtime,
-            wake_time        = excluded.wake_time,
-            total_sleep_min  = excluded.total_sleep_min,
-            restless_moments = excluded.restless_moments,
-            awakenings       = excluded.awakenings,
-            resting_hr       = excluded.resting_hr,
-            notes            = excluded.notes
-        """,
-        e,
+        f"INSERT INTO entries ({cols}) VALUES ({vals}) "
+        f"ON CONFLICT(date) DO UPDATE SET {set_core}, {set_metrics}",
+        params,
     )
     conn.commit()
 
@@ -884,10 +987,7 @@ def cmd_delete(conn, args):
         print(f"No entry found for {args.date}.")
 
 
-CSV_FIELDS = [
-    "date", "bedtime", "wake_time", "total_sleep_min", "restless_moments",
-    "awakenings", "resting_hr", "notes",
-]
+CSV_FIELDS = CORE_COLUMNS + METRIC_COLUMN_NAMES
 
 
 def cmd_export(conn, args):
@@ -919,6 +1019,10 @@ def cmd_import(conn, args):
                 "resting_hr": int(row["resting_hr"]) if row.get("resting_hr") else None,
                 "notes": row.get("notes") or None,
             }
+            for col, coltype in METRIC_COLUMNS:
+                raw = row.get(col)
+                if raw not in (None, ""):
+                    entry[col] = float(raw) if coltype == "REAL" else int(float(raw))
             upsert_entry(conn, entry)
             count += 1
     print(f"Imported {count} entries from {args.infile}.")
@@ -956,6 +1060,33 @@ def cmd_stats(conn, args):
     print(f"Worst night     : {worst['date']}  {worst['efficiency']:.1f}%")
 
 
+def cmd_correlate(conn, args):
+    """Show which health metrics track with sleep efficiency and restlessness."""
+    entries = all_entries(conn)
+    if not entries:
+        print("No entries yet.")
+        return
+    for outcome, title in (("efficiency", "SLEEP EFFICIENCY"),
+                           ("restless", "RESTLESS MOMENTS")):
+        rows = correlate(entries, outcome, min_n=args.min_n)
+        print(hr("="))
+        print(f"WHAT TRACKS WITH {title}")
+        print(hr("="))
+        if not rows:
+            print(f"  Not enough paired data yet (need ≥{args.min_n} nights with "
+                  "the metric). Sync more history from Garmin.")
+        else:
+            for r in rows:
+                print(f"  r={r['r']:+.2f}  {r['strength']:<10} {r['label']} "
+                      f"(n={r['n']})")
+            print("")
+            for r in rows[:3]:
+                print(f"  • {r['message']}")
+        print("")
+    print("Correlation is not causation, and small samples are noisy — treat "
+          "these as hints to explore, not conclusions.")
+
+
 def cmd_seed(conn, args):
     """Insert the example night so `report` works immediately."""
     if not get_setting(conn, "wake_time"):
@@ -977,9 +1108,83 @@ def cmd_seed(conn, args):
           f"{sleep_efficiency(entry['total_sleep_min'], tib):.1f}%).")
 
 
+def _garmin_ts_to_time(ms):
+    """Garmin *Local timestamps are local wall-clock encoded as epoch ms; decode
+    with utcfromtimestamp so this machine's tz offset isn't applied twice."""
+    if not ms:
+        return None
+    return datetime.utcfromtimestamp(ms / 1000).time()
+
+
+def _garmin_daily_summary(api, ds):
+    """Best-effort daily summary dict across garminconnect versions."""
+    for meth in ("get_user_summary", "get_stats"):
+        fn = getattr(api, meth, None)
+        if fn is None:
+            continue
+        try:
+            data = fn(ds)
+            if data:
+                return data
+        except Exception:  # noqa: BLE001
+            continue
+    return {}
+
+
+def fetch_garmin_night(api, ds, wake_default=DEFAULT_WAKE_TIME):
+    """
+    Pull one night of sleep plus daytime/recovery metrics from a logged-in
+    garminconnect `api`. Returns an entry dict ready for upsert_entry, or None
+    if Garmin has no sleep record for that date. Each extra metric is fetched
+    defensively so a missing one never aborts the night.
+    """
+    sleep = api.get_sleep_data(ds)
+    dto = (sleep or {}).get("dailySleepDTO", {}) or {}
+    total_sleep_sec = dto.get("sleepTimeSeconds")
+    if not total_sleep_sec:
+        return None
+
+    bed = _garmin_ts_to_time(dto.get("sleepStartTimestampLocal"))
+    wake = _garmin_ts_to_time(dto.get("sleepEndTimestampLocal"))
+    entry = {
+        "date": ds,
+        "bedtime": fmt_time(bed) if bed else "23:00",
+        "wake_time": fmt_time(wake) if wake else wake_default,
+        "total_sleep_min": int(total_sleep_sec // 60),
+        "restless_moments": int(sleep.get("restlessMomentsCount") or 0),
+        "awakenings": dto.get("awakeCount"),
+        "resting_hr": sleep.get("restingHeartRate"),
+        "notes": "synced from Garmin",
+        # respiration often rides along with the sleep payload
+        "respiration_avg": dto.get("averageRespirationValue")
+                           or sleep.get("avgSleepRespirationValue"),
+    }
+
+    summary = _garmin_daily_summary(api, ds)
+    entry["steps"] = summary.get("totalSteps")
+    entry["stress_avg"] = summary.get("averageStressLevel")
+    entry["body_battery_high"] = summary.get("bodyBatteryHighestValue")
+    entry["body_battery_low"] = summary.get("bodyBatteryLowestValue")
+
+    try:
+        hrv = api.get_hrv_data(ds) or {}
+        entry["hrv_overnight"] = (hrv.get("hrvSummary") or {}).get("lastNightAvg")
+    except Exception:  # noqa: BLE001
+        pass
+
+    if entry["respiration_avg"] is None:
+        try:
+            resp = api.get_respiration_data(ds) or {}
+            entry["respiration_avg"] = resp.get("avgSleepRespirationValue")
+        except Exception:  # noqa: BLE001
+            pass
+
+    return entry
+
+
 def cmd_sync_garmin(conn, args):
     """
-    Optional: pull a night's sleep from Garmin Connect.
+    Optional: pull a night's sleep + health metrics from Garmin Connect.
 
     Garmin has no official consumer sleep API, so this uses the community
     `garminconnect` library (an unofficial wrapper around the Garmin Connect
@@ -1005,46 +1210,25 @@ def cmd_sync_garmin(conn, args):
         return
 
     target = args.date or date.today().isoformat()
+    wake_default = get_setting(conn, "wake_time", DEFAULT_WAKE_TIME)
     try:
         api = Garmin(email, password)
         api.login()
-        sleep = api.get_sleep_data(target)
+        entry = fetch_garmin_night(api, target, wake_default)
     except Exception as exc:  # noqa: BLE001
         print(f"Garmin sync failed: {exc}")
         return
 
-    dto = (sleep or {}).get("dailySleepDTO", {}) or {}
-    total_sleep_sec = dto.get("sleepTimeSeconds")
-    if not total_sleep_sec:
+    if not entry:
         print(f"No sleep data returned by Garmin for {target}.")
         return
 
-    def _ts_to_time(ms):
-        if not ms:
-            return None
-        # Garmin's *Local timestamps encode local wall-clock time as ms since
-        # the epoch (already offset). Decode with utcfromtimestamp so we don't
-        # apply this machine's timezone offset a second time.
-        return datetime.utcfromtimestamp(ms / 1000).time()
-
-    bed = _ts_to_time(dto.get("sleepStartTimestampLocal"))
-    wake = _ts_to_time(dto.get("sleepEndTimestampLocal"))
-    wake_default = get_setting(conn, "wake_time", DEFAULT_WAKE_TIME)
-
-    entry = {
-        "date": target,
-        "bedtime": fmt_time(bed) if bed else "23:00",
-        "wake_time": fmt_time(wake) if wake else wake_default,
-        "total_sleep_min": int(total_sleep_sec // 60),
-        "restless_moments": int(sleep.get("restlessMomentsCount") or 0),
-        "awakenings": dto.get("awakeCount"),
-        "resting_hr": sleep.get("restingHeartRate"),
-        "notes": "synced from Garmin",
-    }
     upsert_entry(conn, entry)
     print(f"Synced {target} from Garmin: "
           f"sleep {minutes_to_hm(entry['total_sleep_min'])}, "
-          f"restless {entry['restless_moments']}.")
+          f"restless {entry['restless_moments']}"
+          + (f", stress {entry['stress_avg']}" if entry.get('stress_avg') else "")
+          + (f", steps {entry['steps']}" if entry.get('steps') else "") + ".")
 
 
 # --------------------------------------------------------------------------- #
@@ -1076,6 +1260,11 @@ def build_parser():
 
     pt = sub.add_parser("trend", help="trend table + sparklines")
     pt.set_defaults(func=cmd_trend)
+
+    pc = sub.add_parser("correlate", help="what health metrics track with sleep")
+    pc.add_argument("--min-n", type=int, default=5, dest="min_n",
+                    help="minimum paired nights required to report a factor")
+    pc.set_defaults(func=cmd_correlate)
 
     pw = sub.add_parser("set-wake", help="set your fixed wake time")
     pw.add_argument("time", help="HH:MM")

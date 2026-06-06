@@ -212,6 +212,24 @@
     });
     $("#adherence").innerHTML = "<b>Adherence — </b>" + (r.adherence_note || "");
   }
+  function renderFactors(r) {
+    var ul = $("#factors-list"); if (!ul) return;
+    ul.innerHTML = "";
+    var items = (r.factors || []).filter(function (f) { return f.strength !== "negligible"; });
+    if (!items.length) {
+      ul.appendChild(el("li", { class: "factor empty-factor", text:
+        "Not enough data yet. Once you've synced ~2 weeks with stress, HRV, steps, etc., patterns will show up here." }));
+      return;
+    }
+    items.slice(0, 6).forEach(function (f) {
+      var dir = f.r > 0 ? "up" : "down";
+      ul.appendChild(el("li", { class: "factor" }, [
+        el("span", { class: "factor-chip " + dir, text: (f.r > 0 ? "+" : "") + f.r.toFixed(2) }),
+        el("span", { class: "factor-msg", text: f.message })
+      ]));
+    });
+  }
+
   function renderFlags(r) {
     var box = $("#flags-wrap");
     var flags = r.doctor_flags || [];
@@ -313,6 +331,7 @@
       renderStats(report);
       renderNudges(report);
       renderProgress(report);
+      renderFactors(report);
       renderFlags(report);
       renderHistory(entries);
       drawCharts(report.series_14 || []);

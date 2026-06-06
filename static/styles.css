@@ -236,6 +236,19 @@ main { padding: 30px 0 56px; }
 .adherence { font-size: 13.5px; color: var(--ink-2); line-height: 1.5; padding: 14px 16px; background: var(--surface-2); border: 1px solid var(--line-2); border-radius: var(--r-sm); }
 .adherence b { color: var(--ink); }
 
+/* ---------- factors: what's affecting your sleep ---------- */
+.factor-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 11px; }
+.factor { display: flex; gap: 12px; align-items: flex-start; font-size: 14px; color: var(--ink-2); line-height: 1.45; }
+.factor-chip {
+  flex: none; min-width: 48px; text-align: center;
+  font-variant-numeric: tabular-nums; font-weight: 700; font-size: 12.5px;
+  padding: 3px 8px; border-radius: 999px; margin-top: 1px;
+}
+.factor-chip.up   { background: var(--good-soft); color: var(--good); }
+.factor-chip.down { background: var(--bad-soft);  color: var(--bad); }
+.factor-msg { flex: 1; }
+.factor.empty-factor { color: var(--muted); font-size: 13.5px; }
+
 /* ---------- charts ---------- */
 .chart-card { padding: 20px 22px 14px; }
 .chart-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }

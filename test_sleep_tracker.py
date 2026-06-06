@@ -220,6 +220,58 @@ class TestDBRoundTrip(unittest.TestCase):
                 "awakenings": None, "resting_hr": None, "notes": None})
         self.assertEqual(st.logging_streak(st.all_entries(self.conn)), 3)
 
+    def test_metric_columns_persist_and_coalesce(self):
+        # write a night with metrics
+        st.upsert_entry(self.conn, {
+            "date": "2026-01-01", "bedtime": "23:00", "wake_time": "07:00",
+            "total_sleep_min": 400, "restless_moments": 1, "awakenings": None,
+            "resting_hr": None, "notes": None,
+            "steps": 8000, "stress_avg": 35, "hrv_overnight": 60.5})
+        row = st.all_entries(self.conn)[0]
+        self.assertEqual(row["steps"], 8000)
+        self.assertEqual(row["stress_avg"], 35)
+        self.assertAlmostEqual(row["hrv_overnight"], 60.5)
+        # a later write WITHOUT metrics must not wipe them (COALESCE)
+        st.upsert_entry(self.conn, {
+            "date": "2026-01-01", "bedtime": "22:30", "wake_time": "07:00",
+            "total_sleep_min": 420, "restless_moments": 2, "awakenings": None,
+            "resting_hr": None, "notes": "edited"})
+        row = st.all_entries(self.conn)[0]
+        self.assertEqual(row["total_sleep_min"], 420)   # core overwritten
+        self.assertEqual(row["steps"], 8000)            # metric preserved
+
+
+class TestCorrelation(unittest.TestCase):
+    def test_pearson_perfect(self):
+        self.assertAlmostEqual(st._pearson([1, 2, 3, 4], [2, 4, 6, 8]), 1.0)
+        self.assertAlmostEqual(st._pearson([1, 2, 3, 4], [8, 6, 4, 2]), -1.0)
+
+    def test_pearson_undefined_constant(self):
+        self.assertIsNone(st._pearson([5, 5, 5], [1, 2, 3]))
+
+    def test_correlate_finds_relationship(self):
+        # stress goes up as efficiency goes down -> strong negative r
+        entries = []
+        for i in range(8):
+            entries.append({"steps": None, "stress_avg": 20 + i * 5,
+                            "body_battery_high": None, "body_battery_low": None,
+                            "hrv_overnight": None, "respiration_avg": None,
+                            "resting_hr": None,
+                            "efficiency": 95 - i * 3, "restless_moments": i})
+        rows = st.correlate(entries, "efficiency", min_n=5)
+        top = next(r for r in rows if r["column"] == "stress_avg")
+        self.assertLess(top["r"], -0.9)
+        self.assertEqual(top["strength"], "strong")
+
+    def test_correlate_skips_sparse_factors(self):
+        entries = [{"steps": 100 * i, "stress_avg": None,
+                    "body_battery_high": None, "body_battery_low": None,
+                    "hrv_overnight": None, "respiration_avg": None,
+                    "resting_hr": None, "efficiency": 80 + i,
+                    "restless_moments": i} for i in range(3)]
+        # only 3 nights -> below min_n=5, nothing reported
+        self.assertEqual(st.correlate(entries, "efficiency", min_n=5), [])
+
 
 if __name__ == "__main__":
     unittest.main()
