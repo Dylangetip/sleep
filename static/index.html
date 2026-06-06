@@ -23,7 +23,6 @@
       </div>
       <div class="topbar-spacer"></div>
       <span id="streak-pill" class="demo-pill" style="display:none"></span>
-      <span class="demo-pill" title="This preview runs on a built-in demo backend. The real app is served by FastAPI.">Demo data</span>
     </div>
   </header>
 
@@ -149,7 +148,6 @@
               <button type="submit" class="btn btn-ghost">Save</button>
             </form>
             <div id="wake-flash" class="form-flash" style="margin-top:8px"></div>
-            <button id="reset-demo" class="btn btn-ghost" style="display:none;margin-top:14px;font-size:12px;padding:7px 12px">Reset demo data</button>
           </div>
         </div>
 
@@ -195,11 +193,7 @@
   <!-- Chart.js (single CDN tag, allowed) -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 
-  <!-- DEMO ONLY: in-browser backend so this runs without Python.
-       Remove this one line when serving from FastAPI (app.py). -->
-  <script src="mock-backend.js"></script>
-
-  <!-- frontend app -->
+  <!-- frontend app — talks to the real FastAPI backend over /api/* -->
   <script src="app.js"></script>
 </body>
 </html>

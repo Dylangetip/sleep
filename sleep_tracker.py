@@ -452,6 +452,140 @@ def adherence_note(entries):
 
 
 # --------------------------------------------------------------------------- #
+# Structured report (for the web API) — reuses the same engine as the CLI
+# --------------------------------------------------------------------------- #
+
+
+def weekly_adjustment_struct(entries):
+    """
+    Structured form of `weekly_adjustment` for the API: returns a dict with
+    direction / suggested minutes / avg efficiency / reason, using the exact
+    same thresholds as the prose version. Returns a 'keep logging' maintain
+    object until a full 7-night week exists; None only when there are no
+    entries at all.
+    """
+    blocks = weekly_blocks(entries)
+    if not blocks:
+        if entries:
+            return {"direction": "maintain", "minutes": 0, "avg_efficiency": None,
+                    "reason": "Keep logging — a full 7-night week is needed "
+                              "before adjusting your window."}
+        return None
+    week = blocks[-1]
+    eff = round(avg([e["efficiency"] for e in week]), 1)
+    if eff > EFF_HIGH:
+        return {"direction": "extend", "minutes": 15, "avg_efficiency": eff,
+                "reason": f"7-night efficiency is {eff}% (>90%). You can add "
+                          "15-30 min to the window — move bedtime earlier, keep "
+                          "wake time fixed."}
+    if eff >= EFF_OK_LOW:
+        return {"direction": "maintain", "minutes": 0, "avg_efficiency": eff,
+                "reason": f"7-night efficiency is {eff}% (85-90%). Hold the "
+                          "current window for another week."}
+    return {"direction": "reduce", "minutes": -15, "avg_efficiency": eff,
+            "reason": f"7-night efficiency is {eff}% (<85%). Hold, or trim 15 "
+                      "min, and emphasize consistency."}
+
+
+def restless_trend_struct(entries):
+    """Direction + human message for the restless-moments trend (or a flat default)."""
+    rt = restless_trend(entries)
+    if not rt:
+        return {"direction": "flat", "message": "Not enough data for a "
+                                                "restlessness trend yet."}
+    if rt["improving"]:
+        return {"direction": "improving",
+                "message": "Restlessness is trending down — your nights are "
+                           "getting calmer."}
+    if rt["slope"] > 0.1:
+        return {"direction": "worsening",
+                "message": "Restlessness is trending up over recent nights."}
+    return {"direction": "flat", "message": "Restlessness has been steady recently."}
+
+
+def report_data(conn):
+    """
+    Everything the CLI `report` shows, as a JSON-serializable dict for the web
+    API. Pulls from the same functions the CLI uses — no rule is duplicated.
+    """
+    entries = all_entries(conn)
+    wake_str = get_setting(conn, "wake_time", DEFAULT_WAKE_TIME)
+    wake_time = parse_time(wake_str)
+    window = prescribed_window_min(entries)
+    bed = prescribed_bedtime(window, wake_time)
+
+    last = entries[-1] if entries else None
+    last_night = None
+    if last:
+        last_night = {
+            "date": last["date"],
+            "bedtime": last["bedtime"],
+            "wake_time": last["wake_time"],
+            "total_sleep_min": last["total_sleep_min"],
+            "tib_min": last["tib_min"],
+            "efficiency": round(last["efficiency"], 1),
+            "restless_moments": last["restless_moments"],
+            "awakenings": last["awakenings"],
+            "resting_hr": last["resting_hr"],
+        }
+
+    recent7 = trailing(entries, 7)
+    averages_7 = None
+    if recent7:
+        hrs = [e["resting_hr"] for e in recent7 if e["resting_hr"] is not None]
+        averages_7 = {
+            "nights": len(recent7),
+            "avg_total_sleep_min": round(avg([e["total_sleep_min"] for e in recent7])),
+            "avg_tib_min": round(avg([e["tib_min"] for e in recent7])),
+            "avg_efficiency": round(avg([e["efficiency"] for e in recent7]), 1),
+            "avg_restless": round(avg([e["restless_moments"] for e in recent7]), 1),
+            "avg_resting_hr": round(avg(hrs)) if hrs else None,
+        }
+
+    series_14 = [
+        {"date": e["date"], "efficiency": round(e["efficiency"], 1),
+         "restless": e["restless_moments"], "total_sleep_min": e["total_sleep_min"],
+         "tib_min": e["tib_min"]}
+        for e in trailing(entries, 14)
+    ]
+
+    return {
+        "wake_time": wake_str,
+        "prescribed_window_min": window,
+        "prescribed_window_hm": minutes_to_hm(window),
+        "prescribed_bedtime": fmt_time(bed),
+        "last_night": last_night,
+        "averages_7": averages_7,
+        "weekly_adjustment": weekly_adjustment_struct(entries),
+        "daily_nudges": daily_nudges(entries, window, wake_time),
+        "progress": positive_reinforcement(entries),
+        "adherence_note": adherence_note(entries) or "",
+        "doctor_flags": doctor_flags(entries),
+        "restless_trend": restless_trend_struct(entries),
+        "series_14": series_14,
+    }
+
+
+def stats_data(conn):
+    """Overall stats + logging streak, as a dict for the web API."""
+    entries = all_entries(conn)
+    if not entries:
+        return {"total_nights": 0, "streak": 0, "avg_efficiency_all": None,
+                "best_efficiency": None, "avg_total_sleep_min": None,
+                "first_date": None, "last_date": None}
+    effs = [e["efficiency"] for e in entries]
+    return {
+        "total_nights": len(entries),
+        "streak": logging_streak(entries),
+        "avg_efficiency_all": round(avg(effs), 1),
+        "best_efficiency": round(max(effs), 1),
+        "avg_total_sleep_min": round(avg([e["total_sleep_min"] for e in entries])),
+        "first_date": entries[0]["date"],
+        "last_date": entries[-1]["date"],
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Rendering
 # --------------------------------------------------------------------------- #
 

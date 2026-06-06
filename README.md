@@ -1,20 +1,53 @@
 # Sleep Tracker + CBT-I Suggestion Engine
 
-A single-file Python CLI that logs your nightly sleep metrics (the ones you pull
-from Garmin each morning), computes **sleep efficiency** and trailing averages,
-and gives **evidence-based suggestions** grounded in CBT-I (sleep restriction +
-stimulus control).
+Logs your nightly sleep metrics (the ones you pull from Garmin each morning),
+computes **sleep efficiency** and trailing averages, and gives **evidence-based
+suggestions** grounded in CBT-I (sleep restriction + stimulus control). Use it
+as a **single-file Python CLI** or through a **web dashboard** — both share the
+same SQLite database and the same tested engine.
 
 > ⚠️ This tool gives **general, evidence-based guidance only — it does not
 > diagnose anything.** Sleep restriction can cause daytime drowsiness for the
 > first 1–2 weeks; be careful driving or operating machinery while sleepy.
 
-## Requirements
+## Web app
 
-- Python 3.8+ (standard library only for core features — no install needed).
-- Optional Garmin sync needs the community `garminconnect` package (see below).
+A FastAPI server (`app.py`) imports `sleep_tracker.py` and serves a single-page
+dashboard from `static/`. No CBT-I rule is reimplemented — every number on the
+page comes straight from the engine.
 
-## Run it
+```bash
+pip install -r requirements.txt        # fastapi + uvicorn
+python3 sleep_tracker.py seed          # optional: one example night so it's not empty
+uvicorn app:app --reload               # then open http://127.0.0.1:8000
+```
+
+The page shows tonight's target bedtime + prescribed window, last-night and
+7-night stats, efficiency/restless charts, daily nudges, progress, the weekly
+adjustment, a highlighted "see a clinician" callout when doctor-flags fire, a
+log form, history table, and a fixed-wake setting. It uses the same `sleep.db`
+as the CLI, so entries logged either way appear in both.
+
+### API
+
+| Method | Route | Returns |
+|--------|-------|---------|
+| GET    | `/api/entries`        | All nights with derived `tib_min` + `efficiency` |
+| POST   | `/api/entries`        | Upsert a night by date |
+| DELETE | `/api/entries/{date}` | Delete a night |
+| GET    | `/api/report`         | Structured `report` (`report_data`) + 14-night series for charts |
+| GET/PUT| `/api/settings/wake`  | Get / set the fixed wake time |
+| GET    | `/api/stats`          | Overall stats + logging streak |
+
+## CLI
+
+Standard library only — no install needed.
+
+**Requirements:** Python 3.8+. The web app additionally needs `fastapi` +
+`uvicorn` (see `requirements.txt`); optional Garmin sync needs the community
+`garminconnect` package (see below).
+
+### Run it
 
 ```bash
 # 1) Seed the example night so `report` works immediately
