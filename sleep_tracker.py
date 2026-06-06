@@ -22,6 +22,7 @@ Usage examples:
 """
 
 import argparse
+import csv
 import os
 import sqlite3
 import sys
@@ -380,11 +381,32 @@ def positive_reinforcement(entries):
     return msgs
 
 
+def weekly_adherence(week):
+    """
+    Average bedtime drift (minutes) from that week's own prescribed bedtime.
+    Lower is better; <= CONSISTENCY_DRIFT_MIN counts as consistent adherence.
+    Returns None for an empty week.
+    """
+    if not week:
+        return None
+    window = prescribed_window_min(week)
+    drifts = []
+    for e in week:
+        target = prescribed_bedtime(window, parse_time(e["wake_time"]))
+        drifts.append(_bedtime_drift_min(parse_time(e["bedtime"]), target))
+    return avg(drifts)
+
+
 def doctor_flags(entries):
     """
     Guardrail — surface a 'see a doctor' recommendation when:
-      * efficiency stays < 85% for 3+ consecutive full weeks, OR
+      * efficiency stays < 85% for 3+ consecutive full weeks DESPITE consistent
+        adherence (avg bedtime drift within CONSISTENCY_DRIFT_MIN each week), OR
       * notes report persistent daytime fatigue / unrefreshing sleep.
+
+    If efficiency is low for 3+ weeks but adherence has drifted, we do NOT
+    escalate to a doctor — instead the report nudges toward tightening
+    consistency first (see adherence_note).
     """
     flags = []
 
@@ -392,11 +414,13 @@ def doctor_flags(entries):
     if len(blocks) >= 3:
         last3 = blocks[-3:]
         effs = [avg([e["efficiency"] for e in wk]) for wk in last3]
-        if all(e < EFF_OK_LOW for e in effs):
+        adher = [weekly_adherence(wk) for wk in last3]
+        consistent = all(a is not None and a <= CONSISTENCY_DRIFT_MIN for a in adher)
+        if all(e < EFF_OK_LOW for e in effs) and consistent:
             flags.append(
                 "Efficiency has stayed below 85% for 3+ consecutive weeks "
-                f"({', '.join(f'{e:.0f}%' for e in effs)}). If you have been "
-                "consistent with the program, consider seeing a doctor — recurrent "
+                f"({', '.join(f'{e:.0f}%' for e in effs)}) despite consistent "
+                "adherence to the window. Consider seeing a doctor — recurrent "
                 "awakenings can have medical causes a tracker can't detect."
             )
 
@@ -413,6 +437,18 @@ def doctor_flags(entries):
         )
 
     return flags
+
+
+def adherence_note(entries):
+    """One-line adherence summary for the most recent full week, or None."""
+    blocks = weekly_blocks(entries)
+    if not blocks:
+        return None
+    a = weekly_adherence(blocks[-1])
+    if a is None:
+        return None
+    verdict = "consistent" if a <= CONSISTENCY_DRIFT_MIN else "drifting"
+    return f"This week's adherence: avg {a:.0f} min off prescribed bedtime ({verdict})."
 
 
 # --------------------------------------------------------------------------- #
@@ -508,6 +544,9 @@ def render_report(conn):
         headline, detail = wk
         lines.append(f"  {headline}")
         lines.append(f"  {detail}")
+    adh = adherence_note(entries)
+    if adh:
+        lines.append(f"  {adh}")
 
     # --- Daily nudges ------------------------------------------------------
     nudges = daily_nudges(entries, window, wake_time)
@@ -702,6 +741,87 @@ def cmd_list(conn, args):
               f"restless {e['restless_moments']}")
 
 
+def cmd_delete(conn, args):
+    cur = conn.execute("DELETE FROM entries WHERE date = ?", (args.date,))
+    conn.commit()
+    if cur.rowcount:
+        print(f"Deleted entry for {args.date}.")
+    else:
+        print(f"No entry found for {args.date}.")
+
+
+CSV_FIELDS = [
+    "date", "bedtime", "wake_time", "total_sleep_min", "restless_moments",
+    "awakenings", "resting_hr", "notes",
+]
+
+
+def cmd_export(conn, args):
+    rows = conn.execute("SELECT * FROM entries ORDER BY date ASC").fetchall()
+    out = open(args.out, "w", newline="") if args.out else sys.stdout
+    try:
+        writer = csv.DictWriter(out, fieldnames=CSV_FIELDS)
+        writer.writeheader()
+        for r in rows:
+            writer.writerow({k: r[k] for k in CSV_FIELDS})
+    finally:
+        if args.out:
+            out.close()
+            print(f"Exported {len(rows)} entries to {args.out}.")
+
+
+def cmd_import(conn, args):
+    with open(args.infile, newline="") as fh:
+        reader = csv.DictReader(fh)
+        count = 0
+        for row in reader:
+            entry = {
+                "date": row["date"].strip(),
+                "bedtime": fmt_time(parse_time(row["bedtime"])),
+                "wake_time": fmt_time(parse_time(row["wake_time"])),
+                "total_sleep_min": int(row["total_sleep_min"]),
+                "restless_moments": int(row.get("restless_moments") or 0),
+                "awakenings": int(row["awakenings"]) if row.get("awakenings") else None,
+                "resting_hr": int(row["resting_hr"]) if row.get("resting_hr") else None,
+                "notes": row.get("notes") or None,
+            }
+            upsert_entry(conn, entry)
+            count += 1
+    print(f"Imported {count} entries from {args.infile}.")
+
+
+def logging_streak(entries):
+    """Consecutive nights logged ending at the latest entry."""
+    if not entries:
+        return 0
+    streak = 1
+    dates = [e["_date"] for e in entries]
+    for i in range(len(dates) - 1, 0, -1):
+        if (dates[i] - dates[i - 1]).days == 1:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def cmd_stats(conn, args):
+    entries = all_entries(conn)
+    if not entries:
+        print("No entries yet.")
+        return
+    effs = [e["efficiency"] for e in entries]
+    best = max(entries, key=lambda e: e["efficiency"])
+    worst = min(entries, key=lambda e: e["efficiency"])
+    print(f"Nights logged   : {len(entries)} "
+          f"({entries[0]['date']} -> {entries[-1]['date']})")
+    print(f"Logging streak  : {logging_streak(entries)} night(s)")
+    print(f"Avg total sleep : {minutes_to_hm(avg([e['total_sleep_min'] for e in entries]))}")
+    print(f"Avg efficiency  : {avg(effs):.1f}%")
+    print(f"Avg restless    : {avg([e['restless_moments'] for e in entries]):.0f}")
+    print(f"Best night      : {best['date']}  {best['efficiency']:.1f}%")
+    print(f"Worst night     : {worst['date']}  {worst['efficiency']:.1f}%")
+
+
 def cmd_seed(conn, args):
     """Insert the example night so `report` works immediately."""
     if not get_setting(conn, "wake_time"):
@@ -826,6 +946,21 @@ def build_parser():
 
     pli = sub.add_parser("list", help="list all logged nights")
     pli.set_defaults(func=cmd_list)
+
+    pd = sub.add_parser("delete", help="delete a night by date")
+    pd.add_argument("date", help="YYYY-MM-DD")
+    pd.set_defaults(func=cmd_delete)
+
+    pe = sub.add_parser("export", help="export entries to CSV (stdout if no --out)")
+    pe.add_argument("--out", help="output CSV path")
+    pe.set_defaults(func=cmd_export)
+
+    pi = sub.add_parser("import", help="import entries from a CSV file")
+    pi.add_argument("infile", help="input CSV path")
+    pi.set_defaults(func=cmd_import)
+
+    pst = sub.add_parser("stats", help="overall stats + logging streak")
+    pst.set_defaults(func=cmd_stats)
 
     ps = sub.add_parser("seed", help="insert the example night")
     ps.add_argument("--date")

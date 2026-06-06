@@ -53,8 +53,16 @@ time in bed is derived from bedtime → wake time (midnight crossing handled).
 | `trend`            | Full table of every night + efficiency bars and sparklines.            |
 | `set-wake HH:MM`   | Set your fixed wake time.                                               |
 | `list`             | One line per logged night.                                             |
+| `stats`            | Overall averages, best/worst night, and current logging streak.        |
+| `delete DATE`      | Remove a night by date (`YYYY-MM-DD`).                                 |
+| `export [--out f]` | Export all nights to CSV (stdout if no `--out`).                       |
+| `import FILE`      | Import/merge nights from a CSV file.                                   |
 | `seed`             | Insert the example night.                                              |
 | `sync-garmin`      | Optional: pull a night from Garmin Connect.                            |
+
+CSV uses the columns: `date, bedtime, wake_time, total_sleep_min,
+restless_moments, awakenings, resting_hr, notes` — so `export` then `import`
+round-trips your data and the CSV is easy to back up or edit by hand.
 
 ## The suggestion engine (rules)
 
@@ -73,10 +81,23 @@ time in bed is derived from bedtime → wake time (midnight crossing handled).
 
 - Every report prints the no-diagnosis disclaimer and the daytime-drowsiness
   caution (driving/machinery).
-- If efficiency stays **< 85% for 3+ consecutive weeks** despite consistent
-  adherence, **or** you log persistent daytime fatigue / unrefreshing sleep,
-  the report surfaces a recommendation to **see a doctor** — recurrent
-  awakenings can have causes a tracker can't detect.
+- If efficiency stays **< 85% for 3+ consecutive weeks** *despite consistent
+  adherence* (the report tracks weekly bedtime adherence to gate this), **or**
+  you log persistent daytime fatigue / unrefreshing sleep, the report surfaces a
+  recommendation to **see a doctor** — recurrent awakenings can have causes a
+  tracker can't detect. If efficiency is low but bedtimes have drifted, it nudges
+  you to tighten consistency first instead of escalating.
+
+## Tests
+
+```bash
+python3 -m unittest -v
+```
+
+A stdlib `unittest` suite (`test_sleep_tracker.py`, no dependencies) covers the
+time math, prescribed-window floor, all three weekly-adjustment branches, trend
+detection, note-based nudges, the adherence-gated doctor flag, and DB
+round-trips.
 
 ## Garmin sync (optional)
 
