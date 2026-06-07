@@ -44,6 +44,13 @@ how rested you felt, and daytime sleepiness. A check-in **merges onto** that
 night's Garmin sleep (neither overwrites the other), and the numeric inputs feed
 the correlation engine — including derived "caffeine/last-meal hours before bed."
 
+**Logging at night, before bed:** the form defaults to "Tonight's sleep." Garmin
+files a night under the morning you wake up, so a check-in entered tonight is
+stored under that wake date — the exact key the next morning's sync will use, so
+the two land on the same row. The form shows the resolved sleep date, and the
+date offset is auto-detected from your own synced data (no guessing). "Last
+night" and "Other date" options are there too.
+
 Your database now lives in a stable per-user location
 (`~/Library/Application Support/SleepTracker/sleep.db` on macOS), so
 re-downloading or moving the app folder never touches your data. Override with

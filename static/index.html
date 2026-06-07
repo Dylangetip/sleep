@@ -100,8 +100,14 @@
             <form id="checkin-form" autocomplete="off">
               <div class="form-grid">
                 <div class="field full">
-                  <label for="form-date">Date</label>
-                  <input type="date" id="form-date" name="date" required />
+                  <label>Logging for</label>
+                  <div class="seg">
+                    <button type="button" id="for-tonight" class="seg-btn seg-on">Tonight&rsquo;s sleep</button>
+                    <button type="button" id="for-lastnight" class="seg-btn">Last night</button>
+                    <button type="button" id="for-custom" class="seg-btn">Other date</button>
+                  </div>
+                  <input type="date" id="form-date" name="date" required style="margin-top:8px" />
+                  <span class="hint" id="attach-hint"></span>
                 </div>
 
                 <div class="field">

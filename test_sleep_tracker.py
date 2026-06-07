@@ -401,5 +401,59 @@ class TestNullSafeReports(unittest.TestCase):
         st.render_report(self.conn)   # should not raise
 
 
+class _FakeGarmin:
+    """Minimal stand-in for garminconnect.Garmin: a night queried under
+    `wake_date` whose bedtime is the previous evening (Garmin's convention)."""
+    def __init__(self, bed_dt, wake_dt):
+        from datetime import timezone
+        self._bed = int(bed_dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
+        self._wake = int(wake_dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
+
+    def get_sleep_data(self, ds):
+        return {"dailySleepDTO": {"calendarDate": ds, "sleepTimeSeconds": 7 * 3600,
+                                  "sleepStartTimestampLocal": self._bed,
+                                  "sleepEndTimestampLocal": self._wake, "awakeCount": 2},
+                "restlessMomentsCount": 20, "restingHeartRate": 55}
+
+    def get_user_summary(self, ds):
+        return {"totalSteps": 8000, "averageStressLevel": 30}
+
+    def get_hrv_data(self, ds):
+        return {"hrvSummary": {"lastNightAvg": 60}}
+
+    def get_respiration_data(self, ds):
+        return {"avgSleepRespirationValue": 14}
+
+
+class TestGarminDateOffset(unittest.TestCase):
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.conn = st.connect(self.path)
+        st.init_db(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+        os.remove(self.path)
+
+    def test_offset_detected_and_checkin_merges(self):
+        from datetime import datetime
+        api = _FakeGarmin(datetime(2026, 6, 6, 23, 10), datetime(2026, 6, 7, 7, 0))
+        # a "tonight" check-in on the evening of Jun 6 targets Jun 6 + offset
+        st.upsert_entry(self.conn, {"date": "2026-06-07", "caffeine_mg": 200,
+                                    "caffeine_last_time": "14:30", "rested": 4})
+        # next-morning sync pulls the night Garmin filed under Jun 7
+        entry = st._sync_one(self.conn, api, "2026-06-07", "08:00")
+        self.assertEqual(entry["date"], "2026-06-07")
+        self.assertEqual(entry["bedtime"], "23:10")
+        self.assertEqual(st.get_setting(self.conn, "garmin_date_offset"), "1")
+        # the check-in and the sleep are now ONE merged row
+        rows = st.all_entries(self.conn)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["caffeine_mg"], 200)        # check-in kept
+        self.assertEqual(rows[0]["total_sleep_min"], 420)    # sleep merged in
+        self.assertIsNotNone(rows[0]["efficiency"])
+
+
 if __name__ == "__main__":
     unittest.main()

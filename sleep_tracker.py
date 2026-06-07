@@ -880,6 +880,7 @@ def report_data(conn):
         "restless_trend": restless_trend_struct(entries),
         "series_14": series_14,
         "factors": correlate(entries, "efficiency"),
+        "garmin_date_offset": int(get_setting(conn, "garmin_date_offset", 1)),
     }
 
 
@@ -1359,12 +1360,17 @@ def cmd_seed(conn, args):
           f"{sleep_efficiency(entry['total_sleep_min'], tib):.1f}%).")
 
 
-def _garmin_ts_to_time(ms):
+def _garmin_ts_to_datetime(ms):
     """Garmin *Local timestamps are local wall-clock encoded as epoch ms; decode
     with utcfromtimestamp so this machine's tz offset isn't applied twice."""
     if not ms:
         return None
-    return datetime.utcfromtimestamp(ms / 1000).time()
+    return datetime.utcfromtimestamp(ms / 1000)
+
+
+def _garmin_ts_to_time(ms):
+    dt = _garmin_ts_to_datetime(ms)
+    return dt.time() if dt else None
 
 
 def _garmin_daily_summary(api, ds):
@@ -1395,7 +1401,8 @@ def fetch_garmin_night(api, ds, wake_default=DEFAULT_WAKE_TIME):
     if not total_sleep_sec:
         return None
 
-    bed = _garmin_ts_to_time(dto.get("sleepStartTimestampLocal"))
+    bed_dt = _garmin_ts_to_datetime(dto.get("sleepStartTimestampLocal"))
+    bed = bed_dt.time() if bed_dt else None
     wake = _garmin_ts_to_time(dto.get("sleepEndTimestampLocal"))
     entry = {
         "date": ds,
@@ -1428,6 +1435,15 @@ def fetch_garmin_night(api, ds, wake_default=DEFAULT_WAKE_TIME):
             resp = api.get_respiration_data(ds) or {}
             entry["respiration_avg"] = resp.get("avgSleepRespirationValue")
         except Exception:  # noqa: BLE001
+            pass
+
+    # How Garmin keys this night: calendarDate (ds) minus the bedtime's date.
+    # Normally +1 (sleep is filed under the wake-up morning). Transient field
+    # (not a column); the caller persists it so check-ins can target the same key.
+    if bed_dt is not None:
+        try:
+            entry["_offset_days"] = (parse_date(ds) - bed_dt.date()).days
+        except (ValueError, TypeError):
             pass
 
     return entry
@@ -1516,6 +1532,8 @@ def _sync_one(conn, api, target, wake_default):
     if not entry:
         return None
     upsert_entry(conn, entry)
+    if "_offset_days" in entry:
+        set_setting(conn, "garmin_date_offset", entry["_offset_days"])
     return entry
 
 

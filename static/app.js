@@ -313,7 +313,9 @@
     entry.wind_down = f.wind_down.checked ? 1 : 0;
     entry.screens_before_bed = f.screens_before_bed.checked ? 1 : 0;
     api.addEntry(entry).then(function () {
-      flash("form-flash", "Check-in saved \u2014 merged onto that night.", "ok");
+      flash("form-flash", "Check-in saved for " + entry.date + " \u2014 it'll merge with that night's sleep.", "ok");
+      ev.target.reset();
+      applyCheckinMode("tonight");
       refresh();
     }).catch(showErr);
   }
@@ -338,6 +340,10 @@
   function refresh() {
     return Promise.all([api.report(), api.entries(), api.stats()]).then(function (res) {
       var report = res[0], entries = res[1], stats = res[2];
+      if (report.garmin_date_offset != null) {
+        garminOffset = report.garmin_date_offset;
+        if (checkinMode !== "custom") applyCheckinMode(checkinMode);
+      }
       renderHero(report);
       renderStats(report);
       renderNudges(report);
@@ -365,14 +371,48 @@
 
   /* ---------------- init ---------------- */
   function todayISO() { return new Date().toLocaleDateString("en-CA"); }
+  function isoPlus(days) {
+    var d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() + days);
+    return d.toLocaleDateString("en-CA");
+  }
+
+  // Garmin files a night under the wake-up morning, so "tonight's" sleep is
+  // stored under today + offset (normally +1). We learn the offset from syncs.
+  var garminOffset = 1;
+  var checkinMode = "tonight";
+
+  function applyCheckinMode(mode) {
+    checkinMode = mode;
+    ["tonight", "lastnight", "custom"].forEach(function (m) {
+      var b = $("#for-" + m); if (b) b.classList.toggle("seg-on", m === mode);
+    });
+    var hint = $("#attach-hint");
+    if (mode === "custom") {
+      hint.textContent = "Pick the sleep date this attaches to.";
+      return;
+    }
+    var d = isoPlus(mode === "tonight" ? garminOffset : garminOffset - 1);
+    $("#form-date").value = d;
+    hint.textContent = (mode === "tonight"
+      ? "→ attaches to the sleep you're about to get (Garmin syncs it next morning)."
+      : "→ attaches to last night's sleep.") + " Sleep date: " + d;
+  }
 
   function init() {
-    // default form values
-    $("#form-date").value = todayISO();
     api.getWake().then(function (s) {
       var w = (s && s.wake) || "06:30";
       $("#wake-setting").value = w;
     });
+    $("#for-tonight").addEventListener("click", function () { applyCheckinMode("tonight"); });
+    $("#for-lastnight").addEventListener("click", function () { applyCheckinMode("lastnight"); });
+    $("#for-custom").addEventListener("click", function () { applyCheckinMode("custom"); });
+    $("#form-date").addEventListener("input", function () {
+      checkinMode = "custom";
+      ["tonight", "lastnight", "custom"].forEach(function (m) {
+        $("#for-" + m).classList.toggle("seg-on", m === "custom");
+      });
+    });
+    applyCheckinMode("tonight");
     $("#checkin-form").addEventListener("submit", onSubmit);
     $("#wake-form").addEventListener("submit", onSaveWake);
     refresh();
