@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 import sleep_tracker as st
 
+st.ensure_db_ready()  # make app-data dir + migrate a legacy ./sleep.db once
 DB_PATH = st.DEFAULT_DB
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
@@ -53,26 +54,39 @@ def _to_int(v, default=None):
         return default
 
 
+def _to_float(v, default=None):
+    if v is None:
+        return default
+    if isinstance(v, str):
+        v = v.strip()
+        if v == "":
+            return default
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
 def _public_entry(e):
-    """Strip private fields and round efficiency for JSON output."""
-    return {
+    """Strip private fields and round efficiency for JSON output. Sleep fields
+    may be None for a check-in-only day."""
+    out = {
         "date": e["date"],
-        "bedtime": e["bedtime"],
-        "wake_time": e["wake_time"],
-        "total_sleep_min": e["total_sleep_min"],
-        "restless_moments": e["restless_moments"],
-        "awakenings": e["awakenings"],
-        "resting_hr": e["resting_hr"],
-        "notes": e["notes"],
-        "tib_min": e["tib_min"],
-        "efficiency": round(e["efficiency"], 1),
-        "steps": e["steps"],
-        "stress_avg": e["stress_avg"],
-        "body_battery_high": e["body_battery_high"],
-        "body_battery_low": e["body_battery_low"],
-        "hrv_overnight": e["hrv_overnight"],
-        "respiration_avg": e["respiration_avg"],
+        "bedtime": e.get("bedtime"),
+        "wake_time": e.get("wake_time"),
+        "total_sleep_min": e.get("total_sleep_min"),
+        "restless_moments": e.get("restless_moments"),
+        "awakenings": e.get("awakenings"),
+        "resting_hr": e.get("resting_hr"),
+        "notes": e.get("notes"),
+        "tib_min": e.get("tib_min"),
+        "efficiency": round(e["efficiency"], 1) if e.get("efficiency") is not None else None,
+        "caffeine_hours_before_bed": e.get("caffeine_hours_before_bed"),
+        "last_meal_hours_before_bed": e.get("last_meal_hours_before_bed"),
     }
+    for col in st.METRIC_COLUMN_NAMES + st.SUBJECTIVE_COLUMN_NAMES:
+        out[col] = e.get(col)
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -84,25 +98,44 @@ def get_entries():
     return with_conn(lambda c: [_public_entry(e) for e in st.all_entries(c)])
 
 
+def _time_or_none(v):
+    v = (v or "").strip()
+    return st.fmt_time(st.parse_time(v)) if v else None
+
+
 @app.post("/api/entries")
 async def post_entry(request: Request):
+    """Upsert a day by date. Only `date` is required — any subset of sleep or
+    subjective fields can be sent; upsert merges them (so a check-in won't wipe
+    the Garmin sleep numbers, and vice versa)."""
     body = await request.json()
-    if not body.get("date") or not body.get("bedtime") or not body.get("wake_time"):
-        raise HTTPException(400, "date, bedtime and wake_time are required")
-    total = _to_int(body.get("total_sleep_min"))
-    if total is None:
-        raise HTTPException(400, "total_sleep_min is required")
+    if not body.get("date"):
+        raise HTTPException(400, "date is required")
     try:
-        entry = {
-            "date": body["date"].strip(),
-            "bedtime": st.fmt_time(st.parse_time(body["bedtime"])),
-            "wake_time": st.fmt_time(st.parse_time(body["wake_time"])),
-            "total_sleep_min": total,
-            "restless_moments": _to_int(body.get("restless_moments"), 0),
-            "awakenings": _to_int(body.get("awakenings"), None),
-            "resting_hr": _to_int(body.get("resting_hr"), None),
-            "notes": (body.get("notes") or "").strip() or None,
-        }
+        entry = {"date": body["date"].strip()}
+        # sleep fields (optional — manual fallback)
+        if "bedtime" in body:
+            entry["bedtime"] = _time_or_none(body.get("bedtime"))
+        if "wake_time" in body:
+            entry["wake_time"] = _time_or_none(body.get("wake_time"))
+        if "total_sleep_min" in body:
+            entry["total_sleep_min"] = _to_int(body.get("total_sleep_min"))
+        if "restless_moments" in body:
+            entry["restless_moments"] = _to_int(body.get("restless_moments"))
+        if "awakenings" in body:
+            entry["awakenings"] = _to_int(body.get("awakenings"))
+        if "resting_hr" in body:
+            entry["resting_hr"] = _to_int(body.get("resting_hr"))
+        if "notes" in body:
+            entry["notes"] = (body.get("notes") or "").strip() or None
+        # subjective check-in fields
+        for col, coltype in st.SUBJECTIVE_COLUMNS:
+            if col not in body:
+                continue
+            if coltype == "TEXT":
+                entry[col] = _time_or_none(body.get(col))
+            else:
+                entry[col] = _to_int(body.get(col))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 

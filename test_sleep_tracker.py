@@ -273,5 +273,133 @@ class TestCorrelation(unittest.TestCase):
         self.assertEqual(st.correlate(entries, "efficiency", min_n=5), [])
 
 
+class TestHoursBeforeBed(unittest.TestCase):
+    def test_afternoon_caffeine(self):
+        self.assertEqual(st._hours_before_bed("15:00", time(23, 0)), 8.0)
+
+    def test_after_bedtime_clamps_to_zero(self):
+        self.assertEqual(st._hours_before_bed("23:30", time(23, 0)), 0.0)
+
+    def test_missing_inputs(self):
+        self.assertIsNone(st._hours_before_bed(None, time(23, 0)))
+        self.assertIsNone(st._hours_before_bed("15:00", None))
+
+
+class TestSchemaAndMerge(unittest.TestCase):
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+
+    def tearDown(self):
+        os.remove(self.path)
+
+    def _legacy_db(self):
+        """A pre-change DB: NOT NULL sleep cols, no optional columns."""
+        import sqlite3
+        c = sqlite3.connect(self.path)
+        c.executescript(
+            "CREATE TABLE entries (date TEXT PRIMARY KEY, bedtime TEXT NOT NULL,"
+            " wake_time TEXT NOT NULL, total_sleep_min INTEGER NOT NULL,"
+            " restless_moments INTEGER NOT NULL DEFAULT 0, awakenings INTEGER,"
+            " resting_hr INTEGER, notes TEXT);"
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+        c.execute("INSERT INTO entries VALUES ('2026-01-01','23:00','07:00',420,5,2,55,'x')")
+        c.commit()
+        c.close()
+
+    def test_migration_relaxes_notnull_and_preserves_rows(self):
+        self._legacy_db()
+        conn = st.connect(self.path)
+        st.init_db(conn)
+        info = {r[1]: r[3] for r in conn.execute("PRAGMA table_info(entries)")}
+        # NOT NULL relaxed on sleep columns
+        self.assertEqual(info["bedtime"], 0)
+        self.assertEqual(info["total_sleep_min"], 0)
+        # optional columns added
+        for c in st.METRIC_COLUMN_NAMES + st.SUBJECTIVE_COLUMN_NAMES:
+            self.assertIn(c, info)
+        # original row intact
+        rows = st.all_entries(conn)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["total_sleep_min"], 420)
+        # idempotent: second init is a no-op
+        st.init_db(conn)
+        self.assertEqual(len(st.all_entries(conn)), 1)
+        conn.close()
+
+    def test_journal_only_insert(self):
+        conn = st.connect(self.path)
+        st.init_db(conn)
+        st.upsert_entry(conn, {"date": "2026-02-01", "caffeine_mg": 150,
+                               "caffeine_last_time": "16:00", "rested": 4})
+        row = st.all_entries(conn)[0]
+        self.assertIsNone(row["bedtime"])
+        self.assertIsNone(row["efficiency"])      # no sleep yet
+        self.assertEqual(row["caffeine_mg"], 150)
+        self.assertEqual(st.scored_entries(st.all_entries(conn)), [])
+        conn.close()
+
+    def test_merge_journal_then_sleep(self):
+        conn = st.connect(self.path)
+        st.init_db(conn)
+        st.upsert_entry(conn, {"date": "2026-02-02", "caffeine_mg": 200})
+        st.upsert_entry(conn, {"date": "2026-02-02", "bedtime": "23:00",
+                               "wake_time": "07:00", "total_sleep_min": 400,
+                               "restless_moments": 3})
+        row = st.all_entries(conn)[0]
+        self.assertEqual(row["caffeine_mg"], 200)     # check-in preserved
+        self.assertEqual(row["total_sleep_min"], 400)  # sleep filled in
+        self.assertIsNotNone(row["efficiency"])
+        conn.close()
+
+    def test_merge_sleep_then_journal(self):
+        conn = st.connect(self.path)
+        st.init_db(conn)
+        st.upsert_entry(conn, {"date": "2026-02-03", "bedtime": "23:00",
+                               "wake_time": "07:00", "total_sleep_min": 400,
+                               "restless_moments": 3, "steps": 8000})
+        st.upsert_entry(conn, {"date": "2026-02-03", "rested": 5, "nap_min": 20})
+        row = st.all_entries(conn)[0]
+        self.assertEqual(row["total_sleep_min"], 400)  # sleep preserved
+        self.assertEqual(row["steps"], 8000)           # metric preserved
+        self.assertEqual(row["rested"], 5)             # check-in added
+        conn.close()
+
+
+class TestNullSafeReports(unittest.TestCase):
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.conn = st.connect(self.path)
+        st.init_db(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+        os.remove(self.path)
+
+    def test_reports_run_with_journal_only_night(self):
+        # several scored nights + one journal-only latest day
+        for i in range(8):
+            st.upsert_entry(self.conn, {
+                "date": f"2026-03-0{i+1}", "bedtime": "23:00", "wake_time": "07:00",
+                "total_sleep_min": 400 + i, "restless_moments": 5})
+        st.upsert_entry(self.conn, {"date": "2026-03-09", "caffeine_mg": 120})
+        # none of these should raise
+        rep = st.report_data(self.conn)
+        self.assertIsNotNone(rep["last_night"])        # uses last scored night
+        self.assertEqual(rep["last_night"]["date"], "2026-03-08")
+        st.stats_data(self.conn)
+        st.render_report(self.conn)
+        st.render_trend(self.conn)
+
+    def test_reports_run_with_only_journal_nights(self):
+        st.upsert_entry(self.conn, {"date": "2026-04-01", "caffeine_mg": 100})
+        rep = st.report_data(self.conn)
+        self.assertIsNone(rep["last_night"])
+        self.assertEqual(rep["series_14"], [])
+        self.assertEqual(st.stats_data(self.conn)["best_efficiency"], None)
+        st.render_report(self.conn)   # should not raise
+
+
 if __name__ == "__main__":
     unittest.main()

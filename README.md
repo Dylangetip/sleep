@@ -24,9 +24,30 @@ uvicorn app:app --reload               # then open http://127.0.0.1:8000
 
 The page shows tonight's target bedtime + prescribed window, last-night and
 7-night stats, efficiency/restless charts, daily nudges, progress, the weekly
-adjustment, a highlighted "see a clinician" callout when doctor-flags fire, a
-log form, history table, and a fixed-wake setting. It uses the same `sleep.db`
-as the CLI, so entries logged either way appear in both.
+adjustment, the "what's affecting your sleep" correlations, a highlighted "see a
+clinician" callout when doctor-flags fire, a **daily check-in form**, a history
+table, and a fixed-wake setting. The CLI and web app share the same database.
+
+### Automatic Garmin sync + daily check-in
+
+Garmin supplies the objective sleep/health numbers; you log the subjective
+things only you know. Set it up once on macOS:
+
+```bash
+python3 sleep_tracker.py garmin-login        # one-time; stores a token, handles 2FA
+python3 sleep_tracker.py install-daily-sync   # pulls the last few nights every morning
+```
+
+The **Daily check-in** form (web) records caffeine (mg + time of last cup),
+naps, last-meal time, wind-down / screens-before-bed, and 1–5 ratings for mood,
+how rested you felt, and daytime sleepiness. A check-in **merges onto** that
+night's Garmin sleep (neither overwrites the other), and the numeric inputs feed
+the correlation engine — including derived "caffeine/last-meal hours before bed."
+
+Your database now lives in a stable per-user location
+(`~/Library/Application Support/SleepTracker/sleep.db` on macOS), so
+re-downloading or moving the app folder never touches your data. Override with
+the `SLEEP_DB` environment variable.
 
 ### API
 
@@ -35,9 +56,21 @@ as the CLI, so entries logged either way appear in both.
 | GET    | `/api/entries`        | All nights with derived `tib_min` + `efficiency` |
 | POST   | `/api/entries`        | Upsert a night by date |
 | DELETE | `/api/entries/{date}` | Delete a night |
-| GET    | `/api/report`         | Structured `report` (`report_data`) + 14-night series for charts |
+| POST   | `/api/entries`        | Upsert/**merge** a day by date — only `date` required; any subset of sleep or check-in fields |
+| GET    | `/api/report`         | Structured `report` (`report_data`) + 14-night series + factors |
 | GET/PUT| `/api/settings/wake`  | Get / set the fixed wake time |
 | GET    | `/api/stats`          | Overall stats + logging streak |
+
+### Garmin / sync commands (CLI)
+
+| Command | What it does |
+|---------|--------------|
+| `garmin-login` | One-time interactive login; stores an OAuth token (handles 2FA) so syncs run hands-free |
+| `sync-garmin [--date D]` | Pull one night |
+| `sync-recent [--days N]` | Pull the last N days (default 3); used by the daily job, idempotent |
+| `install-daily-sync [--hour H]` | macOS: schedule `sync-recent` to run every morning |
+| `uninstall-daily-sync` | Remove the scheduled sync |
+| `backfill.py START [END]` | Bulk-import a date range (one login, many nights) |
 
 ## CLI
 

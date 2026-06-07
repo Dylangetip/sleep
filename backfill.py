@@ -25,31 +25,24 @@ from datetime import date, datetime, timedelta
 
 import sleep_tracker as st
 
-try:
-    from garminconnect import Garmin
-except ImportError:
-    sys.exit("The garminconnect library is missing. Run: pip install garminconnect")
-
 
 def main():
-    email = os.environ.get("GARMIN_EMAIL")
-    password = os.environ.get("GARMIN_PASSWORD")
-    if not email or not password:
-        sys.exit("Set GARMIN_EMAIL and GARMIN_PASSWORD first (the two export lines).")
-
     if len(sys.argv) < 2:
         sys.exit("Usage: python3 backfill.py START [END]   dates as YYYY-MM-DD")
     start = datetime.strptime(sys.argv[1], "%Y-%m-%d").date()
     end = (datetime.strptime(sys.argv[2], "%Y-%m-%d").date()
            if len(sys.argv) > 2 else date.today())
 
+    st.ensure_db_ready()
     conn = st.connect(st.DEFAULT_DB)
     st.init_db(conn)
     wake_default = st.get_setting(conn, "wake_time", st.DEFAULT_WAKE_TIME)
 
-    print(f"Logging in to Garmin as {email} ...")
-    api = Garmin(email, password)
-    api.login()
+    print("Logging in to Garmin ...")
+    try:
+        api = st.garmin_api()  # uses stored token if present, else env email/password
+    except RuntimeError as exc:
+        sys.exit(str(exc))
     print(f"Pulling sleep + metrics from {start} to {end} (database: {st.DEFAULT_DB}) ...")
 
     saved = skipped = failed = 0

@@ -256,28 +256,37 @@
     empty.style.display = "none"; $("#history-table").style.display = "";
     entries.slice().reverse().forEach(function (e) {
       var bt = to12h(e.bedtime), wk = to12h(e.wake_time);
+      var hasSleep = e.efficiency != null;
+      var effCell = hasSleep
+        ? el("td", { class: "num" }, [ el("span", { class: "mini-eff", text: e.efficiency + "%" }) ])
+        : el("td", { class: "num", text: "—" });
+      var dash = function (v) { return v == null ? "—" : String(v); };
       var tr = el("tr", {}, [
         el("td", { class: "date", text: fmtDate(e.date) }),
-        el("td", { text: bt.time + " " + bt.ampm }),
-        el("td", { text: wk.time + " " + wk.ampm }),
+        el("td", { text: e.bedtime ? bt.time + " " + bt.ampm : "—" }),
+        el("td", { text: e.wake_time ? wk.time + " " + wk.ampm : "—" }),
         el("td", { class: "num", text: durHM(e.total_sleep_min) }),
         el("td", { class: "num", text: durHM(e.tib_min) }),
-        el("td", { class: "num" }, [ el("span", { class: "mini-eff " + effClass(e.efficiency).replace("eff-", "c-"), text: e.efficiency + "%" }) ]),
-        el("td", { class: "num", text: String(e.restless_moments) }),
-        el("td", { class: "num", text: e.awakenings == null ? "—" : String(e.awakenings) }),
+        effCell,
+        el("td", { class: "num", text: dash(e.restless_moments) }),
+        el("td", { class: "num", text: dash(e.awakenings) }),
         el("td", { class: "num", text: e.resting_hr == null ? "—" : e.resting_hr + " bpm" }),
         el("td", { class: "num", text: e.steps == null ? "—" : e.steps.toLocaleString() }),
-        el("td", { class: "num", text: e.stress_avg == null ? "—" : String(e.stress_avg) }),
+        el("td", { class: "num", text: dash(e.stress_avg) }),
         el("td", { class: "num", text: e.hrv_overnight == null ? "—" : Math.round(e.hrv_overnight) + " ms" }),
+        el("td", { class: "num", text: e.caffeine_mg == null ? "—" : e.caffeine_mg + " mg" }),
+        el("td", { class: "num", text: dash(e.rested) }),
+        el("td", { class: "num", text: dash(e.daytime_sleepiness) }),
         el("td", {}, [ (function () {
-          var b = el("button", { class: "del-btn", title: "Delete this night", html: "&times;" });
+          var b = el("button", { class: "del-btn", title: "Delete this day", html: "&times;" });
           b.addEventListener("click", function () { onDelete(e.date); });
           return b;
         })() ])
       ]);
-      // colorize efficiency text
-      var span = tr.querySelector(".mini-eff");
-      span.style.color = e.efficiency >= 85 ? getCss("--good") : e.efficiency >= 75 ? getCss("--warn") : getCss("--bad");
+      if (hasSleep) {
+        var span = tr.querySelector(".mini-eff");
+        span.style.color = e.efficiency >= 85 ? getCss("--good") : e.efficiency >= 75 ? getCss("--warn") : getCss("--bad");
+      }
       body.appendChild(tr);
     });
   }
@@ -291,21 +300,20 @@
   function onSubmit(ev) {
     ev.preventDefault();
     var f = ev.target;
-    var entry = {
-      date: f.date.value,
-      bedtime: f.bedtime.value,
-      wake_time: f.wake_time.value,
-      total_sleep_min: f.total_sleep_min.value,
-      restless_moments: f.restless_moments.value,
-      awakenings: f.awakenings.value,
-      resting_hr: f.resting_hr.value,
-      notes: f.notes.value
-    };
-    if (!entry.date || !entry.bedtime || !entry.wake_time || entry.total_sleep_min === "") {
-      return flash("form-flash", "Please fill date, bedtime, wake and total sleep.", "err");
+    if (!f.date.value) {
+      return flash("form-flash", "Pick a date.", "err");
     }
+    // Build a sparse payload: only send fields the user actually filled, so the
+    // server merge never wipes the Garmin sleep numbers.
+    var entry = { date: f.date.value };
+    var textFields = ["caffeine_last_time", "last_meal_time", "notes"];
+    var numFields = ["caffeine_mg", "nap_min", "mood", "rested", "daytime_sleepiness"];
+    numFields.forEach(function (k) { if (f[k] && f[k].value !== "") entry[k] = f[k].value; });
+    textFields.forEach(function (k) { if (f[k] && f[k].value !== "") entry[k] = f[k].value; });
+    entry.wind_down = f.wind_down.checked ? 1 : 0;
+    entry.screens_before_bed = f.screens_before_bed.checked ? 1 : 0;
     api.addEntry(entry).then(function () {
-      flash("form-flash", "Saved \u2014 dashboard updated.", "ok");
+      flash("form-flash", "Check-in saved \u2014 merged onto that night.", "ok");
       refresh();
     }).catch(showErr);
   }
@@ -315,8 +323,6 @@
     var w = $("#wake-setting").value;
     api.setWake(w).then(function () {
       flash("wake-flash", "Fixed wake time saved.", "ok");
-      // reflect in the log form's wake field
-      $("#form-wake").value = w;
       refresh();
     }).catch(showErr);
   }
@@ -365,18 +371,10 @@
     $("#form-date").value = todayISO();
     api.getWake().then(function (s) {
       var w = (s && s.wake) || "06:30";
-      $("#form-wake").value = w;
       $("#wake-setting").value = w;
     });
-    $("#log-form").addEventListener("submit", onSubmit);
+    $("#checkin-form").addEventListener("submit", onSubmit);
     $("#wake-form").addEventListener("submit", onSaveWake);
-    var reset = $("#reset-demo");
-    if (reset && window.__resetDemoData) {
-      reset.style.display = "";
-      reset.addEventListener("click", function () {
-        if (confirm("Reset demo data to the seeded 14 nights?")) { window.__resetDemoData(); refresh(); }
-      });
-    }
     refresh();
   }
 

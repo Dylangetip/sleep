@@ -89,55 +89,72 @@
           </div>
         </div>
 
-        <!-- right: log form + settings -->
+        <!-- right: daily check-in + settings -->
         <div class="grid" style="align-content:start">
           <div class="card card-pad">
-            <div class="section-head" style="margin-bottom:16px">
-              <h2 style="font-size:20px">Log a night</h2>
-              <span class="note">Upserts by date</span>
+            <div class="section-head" style="margin-bottom:6px">
+              <h2 style="font-size:20px">Daily check-in</h2>
+              <span class="note">Garmin fills the sleep numbers</span>
             </div>
-            <form id="log-form" autocomplete="off">
+            <p class="panel-sub" style="margin-bottom:14px">Log the things your watch can&rsquo;t see. Everything&rsquo;s optional &mdash; it merges onto that night&rsquo;s sleep.</p>
+            <form id="checkin-form" autocomplete="off">
               <div class="form-grid">
-                <div class="field">
+                <div class="field full">
                   <label for="form-date">Date</label>
                   <input type="date" id="form-date" name="date" required />
                 </div>
+
                 <div class="field">
-                  <label for="form-sleep">Total sleep <span class="opt">(min)</span></label>
-                  <input type="number" id="form-sleep" name="total_sleep_min" min="0" max="900" step="1" placeholder="420" required />
+                  <label for="form-caff-mg">Caffeine <span class="opt">(mg)</span></label>
+                  <input type="number" id="form-caff-mg" name="caffeine_mg" min="0" max="2000" step="10" placeholder="200" />
                 </div>
                 <div class="field">
-                  <label for="form-bed">Bedtime</label>
-                  <input type="time" id="form-bed" name="bedtime" required />
+                  <label for="form-caff-time">Last caffeine <span class="opt">(time)</span></label>
+                  <input type="time" id="form-caff-time" name="caffeine_last_time" />
+                </div>
+
+                <div class="field">
+                  <label for="form-nap">Nap <span class="opt">(min)</span></label>
+                  <input type="number" id="form-nap" name="nap_min" min="0" max="600" step="5" placeholder="0" />
                 </div>
                 <div class="field">
-                  <label for="form-wake">Wake time</label>
-                  <input type="time" id="form-wake" name="wake_time" required />
-                  <span class="hint">Prefilled from your fixed wake time.</span>
+                  <label for="form-meal">Last meal <span class="opt">(time)</span></label>
+                  <input type="time" id="form-meal" name="last_meal_time" />
+                </div>
+
+                <div class="field">
+                  <label for="form-mood">Mood <span class="opt">(1&ndash;5)</span></label>
+                  <select id="form-mood" name="mood">
+                    <option value="">&mdash;</option>
+                    <option>1</option><option>2</option><option>3</option><option>4</option><option>5</option>
+                  </select>
                 </div>
                 <div class="field">
-                  <label for="form-restless">Restless moments</label>
-                  <input type="number" id="form-restless" name="restless_moments" min="0" max="99" step="1" placeholder="4" />
+                  <label for="form-rested">How rested <span class="opt">(1&ndash;5)</span></label>
+                  <select id="form-rested" name="rested">
+                    <option value="">&mdash;</option>
+                    <option>1</option><option>2</option><option>3</option><option>4</option><option>5</option>
+                  </select>
                 </div>
                 <div class="field">
-                  <label for="form-wakes">Awakenings <span class="opt">(optional)</span></label>
-                  <input type="number" id="form-wakes" name="awakenings" min="0" max="99" step="1" placeholder="2" />
+                  <label for="form-sleepy">Daytime sleepiness <span class="opt">(1&ndash;5)</span></label>
+                  <select id="form-sleepy" name="daytime_sleepiness">
+                    <option value="">&mdash;</option>
+                    <option>1</option><option>2</option><option>3</option><option>4</option><option>5</option>
+                  </select>
                 </div>
-                <div class="field">
-                  <label for="form-hr">Resting HR <span class="opt">(optional, bpm)</span></label>
-                  <input type="number" id="form-hr" name="resting_hr" min="20" max="200" step="1" placeholder="60" />
+                <div class="field" style="justify-content:flex-end">
+                  <label class="check-row"><input type="checkbox" id="form-winddown" name="wind_down" /> Did a wind-down</label>
+                  <label class="check-row"><input type="checkbox" id="form-screens" name="screens_before_bed" /> Screens in last hour</label>
                 </div>
-                <div class="field">
-                  <label>&nbsp;</label>
-                  <div style="font-size:12px;color:var(--muted);align-self:center">Time-in-bed &amp; efficiency are computed for you.</div>
-                </div>
+
                 <div class="field full">
                   <label for="form-notes">Notes <span class="opt">(optional)</span></label>
-                  <textarea id="form-notes" name="notes" placeholder="How you felt, caffeine, stress, etc."></textarea>
+                  <textarea id="form-notes" name="notes" placeholder="Anything else — stress, illness, travel, etc."></textarea>
                 </div>
               </div>
               <div class="btn-row">
-                <button type="submit" class="btn btn-primary">Save night</button>
+                <button type="submit" class="btn btn-primary">Save check-in</button>
                 <span id="form-flash" class="form-flash"></span>
               </div>
             </form>
@@ -174,7 +191,8 @@
                 <th>Date</th><th>Bedtime</th><th>Wake</th>
                 <th class="num">Slept</th><th class="num">In bed</th><th class="num">Efficiency</th>
                 <th class="num">Restless</th><th class="num">Wakes</th><th class="num">Resting HR</th>
-                <th class="num">Steps</th><th class="num">Stress</th><th class="num">HRV</th><th></th>
+                <th class="num">Steps</th><th class="num">Stress</th><th class="num">HRV</th>
+                <th class="num">Caffeine</th><th class="num">Rested</th><th class="num">Sleepy</th><th></th>
               </tr>
             </thead>
             <tbody id="history-body"></tbody>

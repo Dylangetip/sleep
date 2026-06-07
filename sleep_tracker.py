@@ -24,6 +24,7 @@ Usage examples:
 import argparse
 import csv
 import os
+import shutil
 import sqlite3
 import sys
 from datetime import datetime, date, time, timedelta
@@ -32,7 +33,33 @@ from datetime import datetime, date, time, timedelta
 # Constants / configuration
 # --------------------------------------------------------------------------- #
 
-DEFAULT_DB = os.environ.get("SLEEP_DB", os.path.join(os.getcwd(), "sleep.db"))
+
+def app_data_dir():
+    """Stable per-user data directory (DB, Garmin tokens, sync log) so the data
+    survives re-downloading or moving the project folder."""
+    if sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support/SleepTracker")
+    else:
+        base = os.path.join(
+            os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")),
+            "SleepTracker",
+        )
+    os.makedirs(base, exist_ok=True)
+    return base
+
+
+def default_db_path():
+    """SLEEP_DB env override, else <app-data>/sleep.db."""
+    env = os.environ.get("SLEEP_DB")
+    if env:
+        return env
+    return os.path.join(app_data_dir(), "sleep.db")
+
+
+DEFAULT_DB = default_db_path()
+GARMIN_TOKEN_DIR = os.path.join(app_data_dir(), "garth")
+DAILY_SYNC_LOG = os.path.join(app_data_dir(), "daily-sync.log")
+LAUNCHD_LABEL = "com.sleeptracker.dailysync"
 
 # CBT-I sleep-restriction parameters
 WINDOW_PADDING_MIN = 30          # avg total sleep + this = prescribed window
@@ -45,12 +72,21 @@ EFF_OK_LOW = 85.0                # 85-90 -> hold; < 85 -> hold/trim + nudges
 
 CONSISTENCY_DRIFT_MIN = 60       # bedtime drift that triggers a consistency nudge
 
-# Core night columns (always present) and optional Garmin health-metric columns
-# (added by migration; nullable). Order matters for upsert.
-CORE_COLUMNS = [
-    "date", "bedtime", "wake_time", "total_sleep_min", "restless_moments",
-    "awakenings", "resting_hr", "notes",
+# Core night columns. Sleep fields are nullable so a subjective "check-in" can be
+# logged before that night's Garmin sleep is synced. (name -> column DDL type.)
+CORE_COLUMN_TYPES = [
+    ("date", "TEXT PRIMARY KEY"),
+    ("bedtime", "TEXT"),
+    ("wake_time", "TEXT"),
+    ("total_sleep_min", "INTEGER"),
+    ("restless_moments", "INTEGER DEFAULT 0"),
+    ("awakenings", "INTEGER"),
+    ("resting_hr", "INTEGER"),
+    ("notes", "TEXT"),
 ]
+CORE_COLUMNS = [c for c, _ in CORE_COLUMN_TYPES]
+
+# Optional Garmin health-metric columns (added by migration; nullable).
 METRIC_COLUMNS = [
     ("steps", "INTEGER"),
     ("stress_avg", "INTEGER"),
@@ -60,10 +96,27 @@ METRIC_COLUMNS = [
     ("respiration_avg", "REAL"),
 ]
 METRIC_COLUMN_NAMES = [c for c, _ in METRIC_COLUMNS]
-ALL_COLUMNS = CORE_COLUMNS + METRIC_COLUMN_NAMES
+
+# Optional subjective daily check-in columns (things Garmin can't see).
+SUBJECTIVE_COLUMNS = [
+    ("caffeine_mg", "INTEGER"),
+    ("caffeine_last_time", "TEXT"),
+    ("nap_min", "INTEGER"),
+    ("last_meal_time", "TEXT"),
+    ("wind_down", "INTEGER"),
+    ("screens_before_bed", "INTEGER"),
+    ("mood", "INTEGER"),
+    ("rested", "INTEGER"),
+    ("daytime_sleepiness", "INTEGER"),
+]
+SUBJECTIVE_COLUMN_NAMES = [c for c, _ in SUBJECTIVE_COLUMNS]
+
+# Every optional/nullable column, and the full ordered column list.
+OPTIONAL_COLUMNS = METRIC_COLUMNS + SUBJECTIVE_COLUMNS
+ALL_COLUMNS = CORE_COLUMNS + METRIC_COLUMN_NAMES + SUBJECTIVE_COLUMN_NAMES
 
 # Factors correlated against sleep (column -> human label). resting_hr is a core
-# column but is a useful daytime/overnight factor too.
+# column but is a useful factor too; the *_hours_before_bed are derived.
 CORRELATION_FACTORS = [
     ("steps", "daily steps"),
     ("stress_avg", "average daytime stress"),
@@ -72,26 +125,52 @@ CORRELATION_FACTORS = [
     ("hrv_overnight", "overnight HRV"),
     ("respiration_avg", "overnight breathing rate"),
     ("resting_hr", "resting heart rate"),
+    ("caffeine_mg", "caffeine intake"),
+    ("caffeine_hours_before_bed", "caffeine timing before bed"),
+    ("last_meal_hours_before_bed", "last meal timing before bed"),
+    ("nap_min", "daytime napping"),
+    ("wind_down", "wind-down routine"),
+    ("screens_before_bed", "screens before bed"),
+    ("mood", "daytime mood"),
+    ("rested", "how rested you felt"),
+    ("daytime_sleepiness", "daytime sleepiness"),
 ]
 
 # Practical, do-this-tonight takeaways per factor (shown next to each insight).
 FACTOR_ACTIONS = {
     "hrv_overnight": "Usually the strongest signal. Check HRV each morning as a "
         "read on how recovered you are, and protect it: steady wind-down, and "
-        "go easy on late alcohol and hard late workouts.",
-    "resting_hr": "A higher-than-usual resting HR (often late meals, alcohol, "
-        "illness or a stressful day) is an early warning — on those days wind "
-        "down earlier and skip the nightcap.",
+        "go easy on hard late workouts.",
+    "resting_hr": "A higher-than-usual resting HR (often late meals, illness or a "
+        "stressful day) is an early warning — on those days wind down earlier.",
     "body_battery_high": "A higher daytime Body Battery peak means more in the "
         "recovery tank. Defend it with real breaks during the day, not just at night.",
     "body_battery_low": "Running the tank to empty by evening tracks with rougher "
         "nights — build in recovery breaks so you don't bottom out.",
     "stress_avg": "On high-stress days, schedule a genuine buffer before bed — a "
         "walk, breathing, and no work or screens in the last hour.",
-    "respiration_avg": "Elevated overnight breathing often follows alcohol, late "
-        "meals or stress — watch it alongside those habits.",
+    "respiration_avg": "Elevated overnight breathing often follows late meals or "
+        "stress — watch it alongside those habits.",
     "steps": "Step count barely moves your sleep, so don't chase a step goal for "
         "sleep's sake — put that energy into the recovery signals instead.",
+    "caffeine_mg": "Cut total caffeine or shift it earlier — it has a ~5-6h "
+        "half-life, so afternoon cups still circulate at bedtime.",
+    "caffeine_hours_before_bed": "Aim to finish caffeine ~8-10h before bed; the "
+        "more hours of buffer, the cleaner your sleep tends to be.",
+    "last_meal_hours_before_bed": "Try to finish eating ~3h before bed — late "
+        "meals can fragment sleep and raise overnight heart rate.",
+    "nap_min": "Long or late naps bleed off sleep pressure; if you nap, keep it "
+        "under ~20 min and before mid-afternoon.",
+    "wind_down": "Your wind-down routine is paying off — keep protecting that "
+        "last hour before bed.",
+    "screens_before_bed": "Screens in the last hour track with worse nights — try "
+        "dimming and switching to something offline before bed.",
+    "mood": "Lower-mood days tend to sleep worse — worth a decompression buffer "
+        "in the evening.",
+    "rested": "How rested you feel is your own readout — use it to gauge whether "
+        "the window and habits are working.",
+    "daytime_sleepiness": "Persistent daytime sleepiness is the symptom that "
+        "matters most — if it stays high, revisit the window and see a clinician.",
 }
 
 DISCLAIMER = (
@@ -116,33 +195,75 @@ def connect(db_path):
     return conn
 
 
+def _entries_ddl(table="entries"):
+    """Full CREATE TABLE for entries with nullable sleep columns + all optional
+    columns, built from the column constants (one source of truth)."""
+    cols = [f"{name} {ddl}" for name, ddl in CORE_COLUMN_TYPES]
+    cols += [f"{name} {ddl}" for name, ddl in OPTIONAL_COLUMNS]
+    return f"CREATE TABLE {table} (\n  " + ",\n  ".join(cols) + "\n);"
+
+
 def init_db(conn):
     conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS entries (
-            date              TEXT PRIMARY KEY,   -- the night's date (YYYY-MM-DD)
-            bedtime           TEXT NOT NULL,      -- HH:MM
-            wake_time         TEXT NOT NULL,      -- HH:MM
-            total_sleep_min   INTEGER NOT NULL,
-            restless_moments  INTEGER NOT NULL DEFAULT 0,
-            awakenings        INTEGER,
-            resting_hr        INTEGER,
-            notes             TEXT
-        );
-
+        _entries_ddl().replace("CREATE TABLE entries",
+                               "CREATE TABLE IF NOT EXISTS entries")
+        + """
         CREATE TABLE IF NOT EXISTS settings (
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
         """
     )
-    # Migration: add optional health-metric columns if they don't exist yet, so
-    # existing databases pick them up without losing data.
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(entries)")}
-    for col, coltype in METRIC_COLUMNS:
+
+    info = list(conn.execute("PRAGMA table_info(entries)"))
+    existing = {row[1] for row in info}
+    notnull = {row[1]: row[3] for row in info}  # column -> NOT NULL flag
+
+    # Add any missing optional columns (idempotent, non-destructive).
+    for col, coltype in OPTIONAL_COLUMNS:
         if col not in existing:
             conn.execute(f"ALTER TABLE entries ADD COLUMN {col} {coltype}")
+
+    # Relax NOT NULL on the sleep columns (legacy DBs) so a check-in can be
+    # logged before that night's sleep is synced. SQLite can't ALTER a column's
+    # NOT NULL, so rebuild the table — but ONLY when the constraint is still
+    # present, making this a cheap no-op on every subsequent init.
+    legacy_notnull = any(notnull.get(c) for c in
+                         ("bedtime", "wake_time", "total_sleep_min"))
+    if legacy_notnull:
+        _rebuild_entries_relaxed(conn, existing)
+
     conn.commit()
+
+
+def _rebuild_entries_relaxed(conn, existing_cols):
+    """Rebuild `entries` with the relaxed (nullable) schema, preserving all rows.
+    Runs inside a transaction; safe to crash mid-way (original table is intact)."""
+    carry = [c for c in ALL_COLUMNS if c in existing_cols]
+    collist = ", ".join(carry)
+    conn.executescript("DROP TABLE IF EXISTS entries_new;")
+    conn.execute(_entries_ddl("entries_new"))
+    conn.execute(f"INSERT INTO entries_new ({collist}) SELECT {collist} FROM entries")
+    conn.executescript(
+        "DROP TABLE entries;\n"
+        "ALTER TABLE entries_new RENAME TO entries;"
+    )
+
+
+def ensure_db_ready(db_path=None):
+    """Make sure the app-data dir exists and, on first run, copy a legacy
+    ./sleep.db into the stable location so data isn't stranded in a download
+    folder. Honors an explicit SLEEP_DB (then does nothing clever)."""
+    if os.environ.get("SLEEP_DB"):
+        return
+    target = db_path or DEFAULT_DB
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    legacy = os.path.join(os.getcwd(), "sleep.db")
+    if not os.path.exists(target) and os.path.exists(legacy) \
+            and os.path.abspath(legacy) != os.path.abspath(target):
+        shutil.copy2(legacy, target)
+        print(f"Copied your existing sleep.db into {target}\n"
+              f"so your data persists across re-downloads.")
 
 
 def get_setting(conn, key, default=None):
@@ -217,22 +338,51 @@ def subtract_minutes_from_time(wake_time, minutes):
 
 
 def all_entries(conn):
-    """Return entries oldest -> newest as a list of dicts with derived fields."""
+    """Return entries oldest -> newest as a list of dicts with derived fields.
+    Sleep-derived fields are None for 'check-in only' nights (no Garmin sleep
+    yet) so every consumer must use .get / guard for None."""
     rows = conn.execute("SELECT * FROM entries ORDER BY date ASC").fetchall()
     out = []
     for r in rows:
         d = dict(r)
-        bt = parse_time(d["bedtime"])
-        wt = parse_time(d["wake_time"])
         d["_date"] = parse_date(d["date"])
-        d["tib_min"] = time_in_bed_min(bt, wt)
-        d["efficiency"] = sleep_efficiency(d["total_sleep_min"], d["tib_min"])
+        bt = parse_time(d["bedtime"]) if d.get("bedtime") else None
+        wt = parse_time(d["wake_time"]) if d.get("wake_time") else None
+        d["tib_min"] = time_in_bed_min(bt, wt) if (bt and wt) else None
+        d["efficiency"] = (sleep_efficiency(d["total_sleep_min"], d["tib_min"])
+                           if (d["tib_min"] and d.get("total_sleep_min") is not None)
+                           else None)
         # restless moments is a raw count that grows with time in bed; the
         # per-hour rate is what's comparable across nights of different length.
         d["restless_per_hr"] = (round(d["restless_moments"] / (d["tib_min"] / 60), 2)
-                                if d["tib_min"] else 0.0)
+                                if (d["tib_min"] and d.get("restless_moments") is not None)
+                                else None)
+        # derived "hours before bed" for caffeine / last meal (needs bedtime)
+        d["caffeine_hours_before_bed"] = _hours_before_bed(d.get("caffeine_last_time"), bt)
+        d["last_meal_hours_before_bed"] = _hours_before_bed(d.get("last_meal_time"), bt)
         out.append(d)
     return out
+
+
+def _hours_before_bed(event_time_str, bedtime):
+    """Hours between an event clock-time (e.g. last caffeine) and bedtime, where
+    the event is assumed to occur earlier the same day. Returns None if inputs
+    missing; clamps to 0 if the event reads as after bedtime."""
+    if not event_time_str or bedtime is None:
+        return None
+    try:
+        ev = parse_time(event_time_str)
+    except (ValueError, TypeError):
+        return None
+    mins = time_in_bed_min(ev, bedtime)  # ev -> bedtime, handles wrap
+    if mins > 18 * 60:  # event reads as just after bedtime -> treat as ~0
+        return 0.0
+    return round(mins / 60, 1)
+
+
+def scored_entries(entries):
+    """Nights that have objective sleep data (efficiency computed)."""
+    return [e for e in entries if e.get("efficiency") is not None]
 
 
 def trailing(entries, n):
@@ -253,7 +403,8 @@ def restless_trend(entries, days=14):
     least-squares slope. Returns a dict with the details, or None if there is
     not enough data.
     """
-    recent = trailing(entries, days)
+    recent = [e for e in trailing(entries, days)
+              if e.get("restless_moments") is not None]
     if len(recent) < 4:
         return None
 
@@ -315,8 +466,9 @@ def weekly_blocks(entries):
 
 
 def prescribed_window_min(entries):
-    """(7-night avg total sleep) + 30, floored at 330."""
-    recent = trailing(entries, 7)
+    """(7-night avg total sleep) + 30, floored at 330. Uses only nights with
+    objective sleep data."""
+    recent = trailing(scored_entries(entries), 7)
     if not recent:
         return WINDOW_FLOOR_MIN
     a = avg([e["total_sleep_min"] for e in recent])
@@ -337,7 +489,7 @@ def weekly_adjustment(entries):
     Rule 2 — only meaningful on a full 7-night block. Evaluates the most recent
     full week. Returns (headline, detail) or None if no full week yet.
     """
-    blocks = weekly_blocks(entries)
+    blocks = weekly_blocks(scored_entries(entries))
     if not blocks:
         return None
     week = blocks[-1]
@@ -361,42 +513,62 @@ def weekly_adjustment(entries):
 
 
 def daily_nudges(entries, window_min, wake_time):
-    """Rule 3 — nudges based on the latest entry + its notes."""
+    """Rule 3 — nudges based on the latest entry, structured check-in fields,
+    and notes (as a fallback)."""
     nudges = []
     if not entries:
         return nudges
-    last = entries[-1]
+    last = entries[-1]                 # latest day (may be a check-in w/o sleep)
+    scored = scored_entries(entries)
+    last_scored = scored[-1] if scored else None
     notes = (last.get("notes") or "").lower()
 
-    if last["efficiency"] < EFF_OK_LOW:
+    if last_scored is not None and last_scored["efficiency"] < EFF_OK_LOW:
         nudges.append(
             "Last night's efficiency was under 85%. Stimulus-control rule: if you "
             "are awake ~15-20 min, get out of bed, do something calm in dim light, "
             "and return only when sleepy."
         )
 
-    if "alcohol" in notes or "wine" in notes or "beer" in notes or "drink" in notes:
+    # Caffeine — prefer structured fields, fall back to notes scan.
+    hbb = last.get("caffeine_hours_before_bed")
+    if last.get("caffeine_mg") and hbb is not None and hbb < 8:
         nudges.append(
-            "You noted alcohol. Alcohol is a common cause of mid-night awakenings "
-            "and fragmented sleep, even when it helps you fall asleep."
+            f"You had caffeine ~{hbb:.0f}h before bed ({last.get('caffeine_mg')} mg). "
+            "Caffeine has a ~5-6h half-life — pushing your last cup earlier usually "
+            "helps sleep quality."
         )
-
-    if _caffeine_after_noon(notes):
+    elif _caffeine_after_noon(notes):
         nudges.append(
             "You noted caffeine in the afternoon/evening. Caffeine has a long "
             "half-life; intake after ~noon can reduce sleep quality."
         )
 
-    # bedtime drift vs prescribed
-    target_bed = prescribed_bedtime(window_min, wake_time)
-    actual_bed = parse_time(last["bedtime"])
-    drift = _bedtime_drift_min(actual_bed, target_bed)
-    if drift > CONSISTENCY_DRIFT_MIN:
+    if "alcohol" in notes or "wine" in notes or "beer" in notes:
         nudges.append(
-            f"Your bedtime ({fmt_time(actual_bed)}) was {drift} min off the "
-            f"prescribed bedtime ({fmt_time(target_bed)}). Consistency is the "
-            f"anchor — aim to hit the window nightly."
+            "You noted alcohol. Alcohol is a common cause of mid-night awakenings "
+            "and fragmented sleep, even when it helps you fall asleep."
         )
+
+    # Late meal nudge (structured).
+    meal_hbb = last.get("last_meal_hours_before_bed")
+    if meal_hbb is not None and meal_hbb < 2:
+        nudges.append(
+            f"Your last meal was ~{meal_hbb:.0f}h before bed. Eating close to "
+            "bedtime can fragment sleep — aim to finish ~3h before."
+        )
+
+    # bedtime drift vs prescribed (needs a scored night with a bedtime)
+    if last_scored is not None and last_scored.get("bedtime"):
+        target_bed = prescribed_bedtime(window_min, wake_time)
+        actual_bed = parse_time(last_scored["bedtime"])
+        drift = _bedtime_drift_min(actual_bed, target_bed)
+        if drift > CONSISTENCY_DRIFT_MIN:
+            nudges.append(
+                f"Your bedtime ({fmt_time(actual_bed)}) was {drift} min off the "
+                f"prescribed bedtime ({fmt_time(target_bed)}). Consistency is the "
+                f"anchor — aim to hit the window nightly."
+            )
 
     return nudges
 
@@ -469,7 +641,7 @@ def doctor_flags(entries):
     """
     flags = []
 
-    blocks = weekly_blocks(entries)
+    blocks = weekly_blocks(scored_entries(entries))
     if len(blocks) >= 3:
         last3 = blocks[-3:]
         effs = [avg([e["efficiency"] for e in wk]) for wk in last3]
@@ -483,16 +655,28 @@ def doctor_flags(entries):
                 "awakenings can have medical causes a tracker can't detect."
             )
 
+    # Structured self-ratings over the trailing 2 weeks: persistently low
+    # restedness or high daytime sleepiness is the symptom that matters most.
+    recent = trailing(entries, 14)
+    rested_vals = [e["rested"] for e in recent if e.get("rested") is not None]
+    sleepy_vals = [e["daytime_sleepiness"] for e in recent
+                   if e.get("daytime_sleepiness") is not None]
+    low_rested = len(rested_vals) >= 5 and avg(rested_vals) <= 2
+    high_sleepy = len(sleepy_vals) >= 5 and avg(sleepy_vals) >= 4
+
     fatigue_words = (
         "exhausted", "daytime fatigue", "tired all day", "unrefreshing",
         "unrefreshed", "fatigue", "drowsy all day", "nodding off",
         "fell asleep at", "cant stay awake", "can't stay awake",
     )
-    recent_notes = " ".join((e.get("notes") or "").lower() for e in trailing(entries, 14))
-    if any(w in recent_notes for w in fatigue_words):
+    recent_notes = " ".join((e.get("notes") or "").lower() for e in recent)
+    notes_fatigue = any(w in recent_notes for w in fatigue_words)
+
+    if low_rested or high_sleepy or notes_fatigue:
         flags.append(
-            "You've logged persistent daytime fatigue / unrefreshing sleep. "
-            "Consider seeing a doctor — this can have causes beyond sleep timing."
+            "You've consistently logged poor daytime energy (low restedness / "
+            "high daytime sleepiness / fatigue). Consider seeing a doctor — this "
+            "can have causes beyond sleep timing."
         )
 
     return flags
@@ -500,7 +684,7 @@ def doctor_flags(entries):
 
 def adherence_note(entries):
     """One-line adherence summary for the most recent full week, or None."""
-    blocks = weekly_blocks(entries)
+    blocks = weekly_blocks(scored_entries(entries))
     if not blocks:
         return None
     a = weekly_adherence(blocks[-1])
@@ -523,9 +707,10 @@ def weekly_adjustment_struct(entries):
     object until a full 7-night week exists; None only when there are no
     entries at all.
     """
-    blocks = weekly_blocks(entries)
+    scored = scored_entries(entries)
+    blocks = weekly_blocks(scored)
     if not blocks:
-        if entries:
+        if scored:
             return {"direction": "maintain", "minutes": 0, "avg_efficiency": None,
                     "reason": "Keep logging — a full 7-night week is needed "
                               "before adjusting your window."}
@@ -642,7 +827,9 @@ def report_data(conn):
     window = prescribed_window_min(entries)
     bed = prescribed_bedtime(window, wake_time)
 
-    last = entries[-1] if entries else None
+    # last_night = most recent night WITH sleep data (the stat tiles need it).
+    scored = scored_entries(entries)
+    last = scored[-1] if scored else None
     last_night = None
     if last:
         last_night = {
@@ -657,7 +844,7 @@ def report_data(conn):
             "resting_hr": last["resting_hr"],
         }
 
-    recent7 = trailing(entries, 7)
+    recent7 = trailing(scored, 7)
     averages_7 = None
     if recent7:
         hrs = [e["resting_hr"] for e in recent7 if e["resting_hr"] is not None]
@@ -670,11 +857,12 @@ def report_data(conn):
             "avg_resting_hr": round(avg(hrs)) if hrs else None,
         }
 
+    # chart series uses scored nights so gaps don't appear as zero-efficiency.
     series_14 = [
         {"date": e["date"], "efficiency": round(e["efficiency"], 1),
          "restless": e["restless_moments"], "total_sleep_min": e["total_sleep_min"],
          "tib_min": e["tib_min"]}
-        for e in trailing(entries, 14)
+        for e in trailing(scored, 14)
     ]
 
     return {
@@ -702,13 +890,15 @@ def stats_data(conn):
         return {"total_nights": 0, "streak": 0, "avg_efficiency_all": None,
                 "best_efficiency": None, "avg_total_sleep_min": None,
                 "first_date": None, "last_date": None}
-    effs = [e["efficiency"] for e in entries]
+    scored = scored_entries(entries)
+    effs = [e["efficiency"] for e in scored]
     return {
-        "total_nights": len(entries),
+        "total_nights": len(scored),
         "streak": logging_streak(entries),
-        "avg_efficiency_all": round(avg(effs), 1),
-        "best_efficiency": round(max(effs), 1),
-        "avg_total_sleep_min": round(avg([e["total_sleep_min"] for e in entries])),
+        "avg_efficiency_all": round(avg(effs), 1) if effs else None,
+        "best_efficiency": round(max(effs), 1) if effs else None,
+        "avg_total_sleep_min": (round(avg([e["total_sleep_min"] for e in scored]))
+                                if scored else None),
         "first_date": entries[0]["date"],
         "last_date": entries[-1]["date"],
     }
@@ -757,37 +947,47 @@ def render_report(conn):
         lines.append(DISCLAIMER)
         return "\n".join(lines)
 
+    scored = scored_entries(entries)
+
     # --- Last night --------------------------------------------------------
-    last = entries[-1]
+    last = scored[-1] if scored else None
     lines.append("")
-    lines.append("LAST NIGHT  (" + last["date"] + ")")
-    lines.append(f"  Bedtime / Wake : {last['bedtime']} -> {last['wake_time']}")
-    lines.append(f"  Time in bed    : {minutes_to_hm(last['tib_min'])}")
-    lines.append(f"  Total sleep    : {minutes_to_hm(last['total_sleep_min'])}")
-    lines.append(f"  Efficiency     : {last['efficiency']:.1f}%")
-    lines.append(f"  Restless       : {last['restless_moments']}")
-    if last["awakenings"] is not None:
-        lines.append(f"  Awakenings     : {last['awakenings']}")
-    if last["resting_hr"] is not None:
-        lines.append(f"  Resting HR     : {last['resting_hr']} bpm")
-    if last.get("notes"):
-        lines.append(f"  Notes          : {last['notes']}")
+    if last is None:
+        lines.append("LAST NIGHT")
+        lines.append("  No sleep data synced yet — run `sync-garmin` or `sync-recent`.")
+    else:
+        lines.append("LAST NIGHT  (" + last["date"] + ")")
+        lines.append(f"  Bedtime / Wake : {last['bedtime']} -> {last['wake_time']}")
+        lines.append(f"  Time in bed    : {minutes_to_hm(last['tib_min'])}")
+        lines.append(f"  Total sleep    : {minutes_to_hm(last['total_sleep_min'])}")
+        lines.append(f"  Efficiency     : {last['efficiency']:.1f}%")
+        lines.append(f"  Restless       : {last['restless_moments']}")
+        if last["awakenings"] is not None:
+            lines.append(f"  Awakenings     : {last['awakenings']}")
+        if last["resting_hr"] is not None:
+            lines.append(f"  Resting HR     : {last['resting_hr']} bpm")
+        if last.get("notes"):
+            lines.append(f"  Notes          : {last['notes']}")
 
     # --- 7-night averages --------------------------------------------------
-    recent7 = trailing(entries, 7)
+    recent7 = trailing(scored, 7)
     avg_sleep = avg([e["total_sleep_min"] for e in recent7])
     avg_eff = avg([e["efficiency"] for e in recent7])
     avg_restless = avg([e["restless_moments"] for e in recent7])
     lines.append("")
     lines.append(f"7-NIGHT AVERAGES  (n={len(recent7)})")
-    lines.append(f"  Total sleep    : {minutes_to_hm(avg_sleep)}")
-    lines.append(f"  Efficiency     : {avg_eff:.1f}%")
-    lines.append(f"  Restless       : {avg_restless:.0f}")
+    if recent7:
+        lines.append(f"  Total sleep    : {minutes_to_hm(avg_sleep)}")
+        lines.append(f"  Efficiency     : {avg_eff:.1f}%")
+        lines.append(f"  Restless       : {avg_restless:.0f}")
+    else:
+        lines.append("  (no scored nights yet)")
 
     # --- Prescribed window -------------------------------------------------
     window = prescribed_window_min(entries)
     bed = prescribed_bedtime(window, wake_time)
-    floored = window == WINDOW_FLOOR_MIN and (avg_sleep + WINDOW_PADDING_MIN) < WINDOW_FLOOR_MIN
+    floored = window == WINDOW_FLOOR_MIN and (
+        avg_sleep is None or (avg_sleep + WINDOW_PADDING_MIN) < WINDOW_FLOOR_MIN)
     lines.append("")
     lines.append("PRESCRIBED SLEEP WINDOW")
     lines.append(f"  Window length  : {minutes_to_hm(window)}"
@@ -800,9 +1000,10 @@ def render_report(conn):
     lines.append("WEEKLY WINDOW ADJUSTMENT")
     wk = weekly_adjustment(entries)
     if wk is None:
-        need = 7 - (len(entries) % 7 or 7)
+        nscored = len(scored)
+        need = 7 - (nscored % 7 or 7)
         lines.append(f"  Need a full 7-night block first "
-                     f"({len(entries)} logged; {need} more to next full week).")
+                     f"({nscored} scored; {need} more to next full week).")
     else:
         headline, detail = wk
         lines.append(f"  {headline}")
@@ -830,9 +1031,9 @@ def render_report(conn):
             lines.append(f"  ✓ {w}")
 
     # --- Trend mini-view ---------------------------------------------------
-    recent14 = trailing(entries, 14)
+    recent14 = trailing(scored, 14)
     lines.append("")
-    lines.append("TRENDS (last %d nights)" % len(recent14))
+    lines.append("TRENDS (last %d scored nights)" % len(recent14))
     lines.append("  Efficiency : " + sparkline([e["efficiency"] for e in recent14]))
     lines.append("  Restless   : " + sparkline([e["restless_moments"] for e in recent14]))
 
@@ -856,9 +1057,9 @@ def render_report(conn):
 
 
 def render_trend(conn):
-    entries = all_entries(conn)
+    entries = scored_entries(all_entries(conn))
     if not entries:
-        return "No entries yet."
+        return "No scored nights yet (sync sleep from Garmin first)."
     lines = []
     lines.append(f"{'Date':<12}{'TIB':>8}{'Sleep':>8}{'Eff%':>7}{'Restl':>7}{'Awake':>7}{'  Eff bar'}")
     lines.append(hr("-", 64))
@@ -893,20 +1094,22 @@ def render_trend(conn):
 
 def upsert_entry(conn, e):
     """
-    Insert or update a night. Core fields overwrite; optional health-metric
-    fields use COALESCE so a later write that omits them (e.g. a manual edit)
-    keeps any metrics that were previously synced from Garmin.
+    Insert or update a night by date, MERGING fields: every column except `date`
+    uses COALESCE(excluded.col, entries.col), so a partial write (a Garmin sync,
+    or a subjective check-in) only updates the fields it provides and never wipes
+    the others. A non-null incoming value still overwrites. (Trade-off: you can't
+    null a field back out via upsert — use `delete` for that.)
     """
     params = {c: e.get(c) for c in ALL_COLUMNS}
     cols = ", ".join(ALL_COLUMNS)
     vals = ", ".join(f":{c}" for c in ALL_COLUMNS)
-    set_core = ", ".join(f"{c} = excluded.{c}" for c in CORE_COLUMNS if c != "date")
-    set_metrics = ", ".join(
-        f"{c} = COALESCE(excluded.{c}, entries.{c})" for c in METRIC_COLUMN_NAMES
+    set_merge = ", ".join(
+        f"{c} = COALESCE(excluded.{c}, entries.{c})"
+        for c in ALL_COLUMNS if c != "date"
     )
     conn.execute(
         f"INSERT INTO entries ({cols}) VALUES ({vals}) "
-        f"ON CONFLICT(date) DO UPDATE SET {set_core}, {set_metrics}",
+        f"ON CONFLICT(date) DO UPDATE SET {set_merge}",
         params,
     )
     conn.commit()
@@ -998,9 +1201,12 @@ def cmd_set_wake(conn, args):
 
 def cmd_list(conn, args):
     for e in all_entries(conn):
-        print(f"{e['date']}  {e['bedtime']}->{e['wake_time']}  "
-              f"sleep {e['total_sleep_min']}m  eff {e['efficiency']:.1f}%  "
-              f"restless {e['restless_moments']}")
+        if e.get("efficiency") is not None:
+            print(f"{e['date']}  {e['bedtime']}->{e['wake_time']}  "
+                  f"sleep {e['total_sleep_min']}m  eff {e['efficiency']:.1f}%  "
+                  f"restless {e['restless_moments']}")
+        else:
+            print(f"{e['date']}  (check-in only — no sleep synced)")
 
 
 def cmd_delete(conn, args):
@@ -1012,7 +1218,7 @@ def cmd_delete(conn, args):
         print(f"No entry found for {args.date}.")
 
 
-CSV_FIELDS = CORE_COLUMNS + METRIC_COLUMN_NAMES
+CSV_FIELDS = CORE_COLUMNS + METRIC_COLUMN_NAMES + SUBJECTIVE_COLUMN_NAMES
 
 
 def cmd_export(conn, args):
@@ -1034,20 +1240,33 @@ def cmd_import(conn, args):
         reader = csv.DictReader(fh)
         count = 0
         for row in reader:
+            def _t(key):
+                v = (row.get(key) or "").strip()
+                return fmt_time(parse_time(v)) if v else None
+
+            def _i(key):
+                v = (row.get(key) or "").strip()
+                return int(float(v)) if v else None
+
             entry = {
                 "date": row["date"].strip(),
-                "bedtime": fmt_time(parse_time(row["bedtime"])),
-                "wake_time": fmt_time(parse_time(row["wake_time"])),
-                "total_sleep_min": int(row["total_sleep_min"]),
-                "restless_moments": int(row.get("restless_moments") or 0),
-                "awakenings": int(row["awakenings"]) if row.get("awakenings") else None,
-                "resting_hr": int(row["resting_hr"]) if row.get("resting_hr") else None,
+                "bedtime": _t("bedtime"),
+                "wake_time": _t("wake_time"),
+                "total_sleep_min": _i("total_sleep_min"),
+                "restless_moments": _i("restless_moments"),
+                "awakenings": _i("awakenings"),
+                "resting_hr": _i("resting_hr"),
                 "notes": row.get("notes") or None,
             }
-            for col, coltype in METRIC_COLUMNS:
-                raw = row.get(col)
-                if raw not in (None, ""):
-                    entry[col] = float(raw) if coltype == "REAL" else int(float(raw))
+            for col, coltype in OPTIONAL_COLUMNS:
+                raw = (row.get(col) or "").strip()
+                if raw:
+                    if coltype == "REAL":
+                        entry[col] = float(raw)
+                    elif coltype == "TEXT":
+                        entry[col] = raw
+                    else:
+                        entry[col] = int(float(raw))
             upsert_entry(conn, entry)
             count += 1
     print(f"Imported {count} entries from {args.infile}.")
@@ -1072,15 +1291,20 @@ def cmd_stats(conn, args):
     if not entries:
         print("No entries yet.")
         return
-    effs = [e["efficiency"] for e in entries]
-    best = max(entries, key=lambda e: e["efficiency"])
-    worst = min(entries, key=lambda e: e["efficiency"])
-    print(f"Nights logged   : {len(entries)} "
+    scored = scored_entries(entries)
+    print(f"Days logged     : {len(entries)} "
           f"({entries[0]['date']} -> {entries[-1]['date']})")
-    print(f"Logging streak  : {logging_streak(entries)} night(s)")
-    print(f"Avg total sleep : {minutes_to_hm(avg([e['total_sleep_min'] for e in entries]))}")
+    print(f"Scored nights   : {len(scored)}")
+    print(f"Logging streak  : {logging_streak(entries)} day(s)")
+    if not scored:
+        print("(no sleep synced yet — run sync-garmin / sync-recent)")
+        return
+    effs = [e["efficiency"] for e in scored]
+    best = max(scored, key=lambda e: e["efficiency"])
+    worst = min(scored, key=lambda e: e["efficiency"])
+    print(f"Avg total sleep : {minutes_to_hm(avg([e['total_sleep_min'] for e in scored]))}")
     print(f"Avg efficiency  : {avg(effs):.1f}%")
-    print(f"Avg restless    : {avg([e['restless_moments'] for e in entries]):.0f}")
+    print(f"Avg restless    : {avg([e['restless_moments'] for e in scored]):.0f}")
     print(f"Best night      : {best['date']}  {best['efficiency']:.1f}%")
     print(f"Worst night     : {worst['date']}  {worst['efficiency']:.1f}%")
 
@@ -1209,39 +1433,102 @@ def fetch_garmin_night(api, ds, wake_default=DEFAULT_WAKE_TIME):
     return entry
 
 
-def cmd_sync_garmin(conn, args):
-    """
-    Optional: pull a night's sleep + health metrics from Garmin Connect.
-
-    Garmin has no official consumer sleep API, so this uses the community
-    `garminconnect` library (an unofficial wrapper around the Garmin Connect
-    web endpoints). Install it with:  pip install garminconnect
-
-    Credentials are read from env vars GARMIN_EMAIL and GARMIN_PASSWORD
-    (never stored by this tool).
-    """
+def _import_garmin():
     try:
         from garminconnect import Garmin
+        return Garmin
     except ImportError:
-        print("The `garminconnect` library is not installed.\n"
-              "  pip install garminconnect\n"
-              "Then set GARMIN_EMAIL and GARMIN_PASSWORD and retry.\n"
-              "Note: this is an UNOFFICIAL library; Garmin offers no official "
-              "consumer sleep API. Manual `log` always works.")
-        return
+        raise RuntimeError(
+            "The `garminconnect` library is not installed.\n"
+            "  pip install garminconnect\n"
+            "Note: this is an UNOFFICIAL library; Garmin offers no official "
+            "consumer sleep API. Manual `log` always works."
+        )
 
+
+def garmin_api():
+    """Return a logged-in Garmin client. Prefers saved OAuth tokens (set up once
+    via `garmin-login`, so the daily job needs no password); falls back to
+    GARMIN_EMAIL/GARMIN_PASSWORD env vars."""
+    Garmin = _import_garmin()
+    # 1) token resume (hands-free, survives MFA)
+    if os.path.isdir(GARMIN_TOKEN_DIR) and os.listdir(GARMIN_TOKEN_DIR):
+        try:
+            api = Garmin()
+            api.login(GARMIN_TOKEN_DIR)
+            return api
+        except Exception:  # noqa: BLE001 — tokens missing/expired, fall through
+            pass
+    # 2) email/password fallback
     email = os.environ.get("GARMIN_EMAIL")
     password = os.environ.get("GARMIN_PASSWORD")
     if not email or not password:
-        print("Set GARMIN_EMAIL and GARMIN_PASSWORD environment variables first.")
+        raise RuntimeError(
+            "Not authorized with Garmin. Run `python sleep_tracker.py garmin-login` "
+            "once (handles 2FA, stores a token), or set GARMIN_EMAIL/GARMIN_PASSWORD."
+        )
+    api = Garmin(email, password)
+    api.login()
+    return api
+
+
+def cmd_garmin_login(conn, args):
+    """One-time interactive Garmin login that stores an OAuth token so future
+    syncs (and the daily job) run without a password and survive 2FA."""
+    import getpass
+    try:
+        Garmin = _import_garmin()
+    except RuntimeError as exc:
+        print(exc)
         return
 
+    email = os.environ.get("GARMIN_EMAIL") or input("Garmin email: ").strip()
+    password = os.environ.get("GARMIN_PASSWORD") or getpass.getpass("Garmin password: ")
+
+    os.makedirs(GARMIN_TOKEN_DIR, exist_ok=True)
+    try:
+        # Newer garminconnect supports a 2FA prompt + return-on-mfa flow.
+        try:
+            api = Garmin(email=email, password=password,
+                         prompt_mfa=lambda: input("2FA code (blank if none): ").strip())
+        except TypeError:
+            api = Garmin(email, password)
+        result = api.login()
+        # Some versions return ("needs_mfa", state) instead of prompting.
+        if isinstance(result, tuple) and result and result[0] == "needs_mfa":
+            code = input("2FA code: ").strip()
+            api.resume_login(result[1], code)
+        # Persist tokens (method name varies across garth versions).
+        if hasattr(api, "garth") and hasattr(api.garth, "dump"):
+            api.garth.dump(GARMIN_TOKEN_DIR)
+        else:  # pragma: no cover
+            import garth
+            garth.save(GARMIN_TOKEN_DIR)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Garmin login failed: {exc}")
+        return
+    print(f"Authorized. Token saved to {GARMIN_TOKEN_DIR}\n"
+          "Future syncs run hands-free — no password needed.")
+
+
+def _sync_one(conn, api, target, wake_default):
+    entry = fetch_garmin_night(api, target, wake_default)
+    if not entry:
+        return None
+    upsert_entry(conn, entry)
+    return entry
+
+
+def cmd_sync_garmin(conn, args):
+    """Pull one night's sleep + health metrics from Garmin Connect."""
     target = args.date or date.today().isoformat()
     wake_default = get_setting(conn, "wake_time", DEFAULT_WAKE_TIME)
     try:
-        api = Garmin(email, password)
-        api.login()
-        entry = fetch_garmin_night(api, target, wake_default)
+        api = garmin_api()
+        entry = _sync_one(conn, api, target, wake_default)
+    except RuntimeError as exc:
+        print(exc)
+        return
     except Exception as exc:  # noqa: BLE001
         print(f"Garmin sync failed: {exc}")
         return
@@ -1249,13 +1536,117 @@ def cmd_sync_garmin(conn, args):
     if not entry:
         print(f"No sleep data returned by Garmin for {target}.")
         return
-
-    upsert_entry(conn, entry)
     print(f"Synced {target} from Garmin: "
           f"sleep {minutes_to_hm(entry['total_sleep_min'])}, "
           f"restless {entry['restless_moments']}"
           + (f", stress {entry['stress_avg']}" if entry.get('stress_avg') else "")
           + (f", steps {entry['steps']}" if entry.get('steps') else "") + ".")
+
+
+def cmd_sync_recent(conn, args):
+    """Pull the last N days from Garmin (default 3) — used by the daily job to
+    catch up. Idempotent: re-runs merge, never duplicating or wiping check-ins."""
+    import time as _time
+    days = max(1, args.days)
+    wake_default = get_setting(conn, "wake_time", DEFAULT_WAKE_TIME)
+    try:
+        api = garmin_api()
+    except RuntimeError as exc:
+        print(exc)
+        return
+    saved = skipped = failed = 0
+    today = date.today()
+    for i in range(days):
+        ds = (today - timedelta(days=i)).isoformat()
+        try:
+            entry = _sync_one(conn, api, ds, wake_default)
+            if entry:
+                saved += 1
+            else:
+                skipped += 1
+        except Exception as exc:  # noqa: BLE001
+            print(f"  {ds}: error: {exc}")
+            failed += 1
+        _time.sleep(0.7)
+    msg = (f"{datetime.now().isoformat(timespec='seconds')}  sync-recent "
+           f"{days}d: saved {saved}, no-data {skipped}, errors {failed}")
+    print(msg)
+    try:
+        with open(DAILY_SYNC_LOG, "a") as fh:
+            fh.write(msg + "\n")
+    except OSError:
+        pass
+
+
+def _launchd_plist_path():
+    return os.path.expanduser(
+        f"~/Library/LaunchAgents/{LAUNCHD_LABEL}.plist")
+
+
+def build_launchd_plist(hour):
+    """Return the LaunchAgent plist dict for the daily sync (pure, testable)."""
+    return {
+        "Label": LAUNCHD_LABEL,
+        "ProgramArguments": [sys.executable, os.path.abspath(__file__),
+                             "sync-recent", "--days", "3"],
+        "EnvironmentVariables": {"SLEEP_DB": DEFAULT_DB},
+        "StartCalendarInterval": {"Hour": int(hour), "Minute": 0},
+        "RunAtLoad": False,
+        "StandardOutPath": DAILY_SYNC_LOG,
+        "StandardErrorPath": DAILY_SYNC_LOG,
+    }
+
+
+def cmd_install_daily_sync(conn, args):
+    """Install a macOS LaunchAgent that runs `sync-recent` every morning."""
+    import plistlib
+    import subprocess
+    if sys.platform != "darwin":
+        print("Auto-sync install is macOS-only. On Linux, add a cron/systemd "
+              "timer that runs:  python sleep_tracker.py sync-recent --days 3")
+        return
+    if not (os.path.isdir(GARMIN_TOKEN_DIR) and os.listdir(GARMIN_TOKEN_DIR)):
+        print("Run `garmin-login` first — the background job can't do 2FA, so it "
+              "needs a stored token.")
+        return
+
+    plist_path = _launchd_plist_path()
+    os.makedirs(os.path.dirname(plist_path), exist_ok=True)
+    with open(plist_path, "wb") as fh:
+        plistlib.dump(build_launchd_plist(args.hour), fh)
+
+    # Reload (try modern bootstrap, fall back to legacy load).
+    uid = os.getuid()
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}", plist_path],
+                   capture_output=True)
+    r = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", plist_path],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        subprocess.run(["launchctl", "unload", plist_path], capture_output=True)
+        subprocess.run(["launchctl", "load", "-w", plist_path], capture_output=True)
+
+    print(f"Installed daily Garmin sync at {args.hour:02d}:00.")
+    print(f"  Plist: {plist_path}")
+    print(f"  Log:   {DAILY_SYNC_LOG}")
+    print("Runs while you're logged in (catches up on wake). "
+          "Running one sync now to confirm it works...")
+    args.days = 3
+    cmd_sync_recent(conn, args)
+
+
+def cmd_uninstall_daily_sync(conn, args):
+    """Remove the macOS daily-sync LaunchAgent."""
+    import subprocess
+    plist_path = _launchd_plist_path()
+    uid = os.getuid()
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}", plist_path],
+                   capture_output=True)
+    subprocess.run(["launchctl", "unload", plist_path], capture_output=True)
+    if os.path.exists(plist_path):
+        os.remove(plist_path)
+        print(f"Removed daily sync ({plist_path}).")
+    else:
+        print("Daily sync was not installed.")
 
 
 # --------------------------------------------------------------------------- #
@@ -1319,15 +1710,36 @@ def build_parser():
     ps.add_argument("--date")
     ps.set_defaults(func=cmd_seed)
 
-    pg = sub.add_parser("sync-garmin", help="optional: pull a night from Garmin Connect")
+    pg = sub.add_parser("sync-garmin", help="pull one night from Garmin Connect")
     pg.add_argument("--date")
     pg.set_defaults(func=cmd_sync_garmin)
+
+    pgl = sub.add_parser("garmin-login",
+                         help="one-time Garmin login (stores a token; handles 2FA)")
+    pgl.set_defaults(func=cmd_garmin_login)
+
+    psr = sub.add_parser("sync-recent",
+                         help="pull the last N days from Garmin (default 3)")
+    psr.add_argument("--days", type=int, default=3)
+    psr.set_defaults(func=cmd_sync_recent)
+
+    pid = sub.add_parser("install-daily-sync",
+                         help="macOS: run the Garmin sync automatically each morning")
+    pid.add_argument("--hour", type=int, default=9,
+                     help="hour of day to run (0-23, default 9)")
+    pid.set_defaults(func=cmd_install_daily_sync)
+
+    pud = sub.add_parser("uninstall-daily-sync",
+                         help="remove the automatic daily Garmin sync")
+    pud.set_defaults(func=cmd_uninstall_daily_sync)
 
     return p
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.db == DEFAULT_DB:
+        ensure_db_ready(args.db)
     conn = connect(args.db)
     init_db(conn)
     try:
