@@ -132,6 +132,63 @@ a { color: var(--accent-700); }
 .tab[hidden] { display: none; }
 
 /* ---------- diet / meals ---------- */
+/* ---------- diet: macro dashboard ---------- */
+:root { --c-protein: #4f6bff; --c-carbs: #b4690e; --c-fat: #1f8a5b; }
+.day-nav { display: flex; align-items: center; gap: 8px; }
+.day-nav input[type=date] { font-family: var(--sans); font-size: 13px; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 7px 10px; }
+.daybtn { font-size: 18px; line-height: 1; padding: 4px 12px; }
+.daybtn:disabled { opacity: 0.4; cursor: default; }
+
+.macro-dash { display: grid; grid-template-columns: 240px 1fr; gap: 30px; align-items: center; }
+.cal-dial { position: relative; width: 220px; height: 220px; margin: 0 auto; }
+.dial-center { position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; text-align: center; }
+.dial-num { font-family: var(--serif); font-size: 52px; line-height: 1; letter-spacing: -0.02em; }
+.dial-label { font-size: 12px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--muted); margin-top: 4px; }
+.dial-sub { font-size: 13px; color: var(--muted); margin-top: 6px; font-variant-numeric: tabular-nums; }
+
+.macro-bars { display: flex; flex-direction: column; gap: 16px; }
+.macrobar-top { display: flex; justify-content: space-between; align-items: baseline; }
+.macrobar-label { font-size: 13px; font-weight: 700; color: var(--ink); }
+.macrobar-val { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.macrobar-track { height: 12px; background: var(--line-2); border-radius: 999px; margin-top: 6px; overflow: hidden; }
+.macrobar-fill { height: 100%; border-radius: 999px; transition: width .5s ease; }
+.macrobar.protein .macrobar-fill { background: var(--c-protein); }
+.macrobar.carbs .macrobar-fill { background: var(--c-carbs); }
+.macrobar.fat .macrobar-fill { background: var(--c-fat); }
+.macrobar-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.energy-line { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line-2);
+  font-size: 14px; color: var(--ink-2); text-align: center; }
+.energy-line b { color: var(--ink); font-variant-numeric: tabular-nums; }
+
+/* this-day editable meal list */
+.meal-list { display: flex; flex-direction: column; }
+.meal-row { border-bottom: 1px solid var(--line-2); }
+.meal-row:last-child { border-bottom: none; }
+.meal-row-view { display: flex; align-items: center; gap: 12px; padding: 10px 0; }
+.meal-row-thumb { width: 42px; height: 42px; border-radius: var(--r-sm); object-fit: cover; flex: none; }
+.meal-row-main { flex: 1; min-width: 0; }
+.meal-row-title { font-size: 14px; color: var(--ink); font-weight: 500; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.meal-row-macros { font-size: 12.5px; color: var(--muted); margin-top: 1px; font-variant-numeric: tabular-nums; }
+.meal-row-cal { font-family: var(--serif); font-size: 19px; color: var(--ink); white-space: nowrap; }
+.meal-row-cal .u { font-family: var(--sans); font-size: 12px; color: var(--muted); }
+.meal-row-actions { display: flex; gap: 4px; }
+.icon-btn { width: 28px; height: 28px; border-radius: 7px; border: 1px solid var(--line);
+  background: var(--surface); color: var(--muted); cursor: pointer; font-size: 14px; display: grid; place-items: center; }
+.icon-btn:hover { background: var(--surface-2); color: var(--ink-2); }
+.meal-row-edit { display: none; gap: 10px; flex-wrap: wrap; align-items: flex-end; padding: 0 0 12px; }
+.meal-row.editing .meal-row-edit { display: flex; }
+.meal-edit-field { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+.meal-edit-field input { width: 76px; font-size: 14px; padding: 7px 9px; background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: var(--r-sm); }
+
+@media (max-width: 700px) {
+  .macro-dash { grid-template-columns: 1fr; gap: 22px; }
+}
+
 /* AI loading overlay + spinner */
 .ai-overlay { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center;
   background: rgba(15,21,48,0.45); backdrop-filter: blur(2px); }

@@ -313,6 +313,31 @@ def reanalyze_meal(meal_id: int):
     return with_conn(_go)
 
 
+@app.patch("/api/meals/{meal_id}")
+async def patch_meal(meal_id: int, request: Request):
+    """Hand-correct a meal's macros/notes/time (no API call). Marks it edited."""
+    body = await request.json()
+    fields = {}
+    if "calories" in body:
+        fields["calories"] = _to_int(body.get("calories"))
+    for k in ("protein_g", "carbs_g", "fat_g"):
+        if k in body:
+            fields[k] = _to_float(body.get(k))
+    if "time" in body:
+        fields["time"] = (body.get("time") or "").strip() or None
+    if "notes" in body:
+        fields["notes"] = (body.get("notes") or "").strip() or None
+
+    def _go(conn):
+        if not st.get_meal(conn, meal_id):
+            raise HTTPException(404, "meal not found")
+        if fields:
+            fields["status"] = "edited"
+            st.update_meal(conn, meal_id, fields)
+        return _public_meal(st.get_meal(conn, meal_id))
+    return with_conn(_go)
+
+
 @app.delete("/api/meals/{meal_id}")
 def delete_meal(meal_id: int):
     def _del(conn):
