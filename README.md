@@ -10,7 +10,34 @@ same SQLite database and the same tested engine.
 > diagnose anything.** Sleep restriction can cause daytime drowsiness for the
 > first 1–2 weeks; be careful driving or operating machinery while sleepy.
 
-## Web app
+## Whole-health app (web)
+
+Beyond sleep, the web app is a multi-tab health dashboard — **Today · Diet ·
+Activity · Body · Insights** — sharing one local database:
+
+- **Garmin pull** (sleep, activities/workouts, weight & body composition,
+  training readiness, VO₂max, hydration, intensity, calories) on a schedule and
+  via a **Sync button** in the header.
+- **Diet**: snap a meal photo → it's sent to the **Claude API** (Opus 4.8, *your*
+  Anthropic key, ~2–3¢/photo) to estimate calories + protein/carbs/fat + a
+  description; plus a notes field, weight goal, calorie/macro targets, net
+  calories (in vs out), and a photo food gallery.
+- **Insights**: a unified, cross-domain correlation engine — what (diet/activity/
+  body) tracks with your sleep, **and** what last night's sleep predicts about the
+  next day (resting HR, readiness, stress) — plus an optional **AI daily summary**.
+
+> 🔑 The meal feature needs an **Anthropic API key** (console.anthropic.com),
+> entered on the Diet tab. The key and your meal photos live **only** in the local
+> app-data dir (`~/Library/Application Support/SleepTracker`), never in the repo,
+> and photos are billed to your own Anthropic account.
+
+> 📡 **No Garmin webhook.** Real-time push needs Garmin's official partner API +
+> a public server, which a local app can't use — and Garmin's data lags anyway.
+> Instead it **polls** (the scheduled job, default every ~3h) and gives you a
+> **Sync** button. Cross-domain correlations recompute on every sync (free, local
+> math); the AI summary regenerates once a day or on demand.
+
+## Web app (sleep)
 
 A FastAPI server (`app.py`) imports `sleep_tracker.py` and serves a single-page
 dashboard from `static/`. No CBT-I rule is reimplemented — every number on the

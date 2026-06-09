@@ -18,15 +18,27 @@
         <span class="mark" aria-hidden="true"></span>
         <span>
           <div class="brand-name">Rested</div>
-          <div class="brand-sub">CBT-I sleep companion</div>
+          <div class="brand-sub">whole-health companion</div>
         </span>
       </div>
+      <nav class="tabnav" id="tabnav">
+        <button class="tabbtn tab-on" data-tab="today">Today</button>
+        <button class="tabbtn" data-tab="diet">Diet</button>
+        <button class="tabbtn" data-tab="activity">Activity</button>
+        <button class="tabbtn" data-tab="body">Body</button>
+        <button class="tabbtn" data-tab="insights">Insights</button>
+      </nav>
       <div class="topbar-spacer"></div>
       <span id="streak-pill" class="demo-pill" style="display:none"></span>
+      <button id="sync-btn" class="btn btn-ghost sync-btn" title="Pull the latest from Garmin now">↻ Sync</button>
+      <span id="sync-status" class="sync-status"></span>
     </div>
   </header>
 
   <main class="wrap">
+
+   <!-- ================= TODAY (sleep) ================= -->
+   <div id="tab-today" class="tab">
 
     <!-- ===== HERO: tonight's plan ===== -->
     <section class="section">
@@ -207,6 +219,137 @@
         <div id="history-empty" class="empty" style="display:none">No nights logged yet. Add your first night above.</div>
       </div>
     </section>
+
+   </div><!-- /tab-today -->
+
+   <!-- ================= DIET ================= -->
+   <div id="tab-diet" class="tab" hidden>
+    <section class="section"><div id="diet-hero" class="hero"></div></section>
+    <section class="section"><div id="diet-stats" class="stat-row"></div></section>
+
+    <section class="section">
+      <div class="grid cols-2">
+        <!-- left: log a meal -->
+        <div class="card card-pad">
+          <div class="section-head" style="margin-bottom:6px">
+            <h2 style="font-size:20px">Log a meal</h2>
+            <span class="note">Photo → Claude estimates the macros</span>
+          </div>
+          <p class="panel-sub" style="margin-bottom:14px">Snap your plate; add a note for anything the photo can&rsquo;t show (e.g. &ldquo;cooked in 2 tbsp oil&rdquo;).</p>
+          <form id="meal-form" autocomplete="off">
+            <div class="form-grid">
+              <div class="field full">
+                <label for="meal-photo">Photo</label>
+                <input type="file" id="meal-photo" name="photo" accept="image/*" />
+                <img id="meal-preview" class="meal-preview" alt="" hidden />
+              </div>
+              <div class="field">
+                <label for="meal-date">Date</label>
+                <input type="date" id="meal-date" name="date" required />
+              </div>
+              <div class="field">
+                <label for="meal-time">Time <span class="opt">(optional)</span></label>
+                <input type="time" id="meal-time" name="time" />
+              </div>
+              <div class="field full">
+                <label for="meal-notes">What&rsquo;s on the plate <span class="opt">(optional)</span></label>
+                <textarea id="meal-notes" name="notes" placeholder="e.g. grilled chicken, rice, side salad, olive oil"></textarea>
+              </div>
+            </div>
+            <div class="btn-row">
+              <button type="submit" class="btn btn-primary">Analyze &amp; save</button>
+              <span id="meal-flash" class="form-flash"></span>
+            </div>
+          </form>
+        </div>
+        <!-- right: goals + key -->
+        <div class="grid" style="align-content:start">
+          <div class="card card-pad">
+            <h3 class="panel-title">Goals</h3>
+            <p class="panel-sub">Daily targets and your weight goal.</p>
+            <form id="goals-form" class="form-grid">
+              <div class="field"><label>Weight unit</label>
+                <select id="g-unit" name="weight_unit"><option>lb</option><option>kg</option></select></div>
+              <div class="field"><label>Weight goal</label><input type="number" id="g-weight" name="weight_goal" step="0.1" /></div>
+              <div class="field"><label>Calories/day</label><input type="number" id="g-cal" name="calorie_goal" step="10" /></div>
+              <div class="field"><label>Protein g</label><input type="number" id="g-prot" name="protein_goal" step="5" /></div>
+              <div class="field"><label>Carbs g</label><input type="number" id="g-carb" name="carb_goal" step="5" /></div>
+              <div class="field"><label>Fat g</label><input type="number" id="g-fat" name="fat_goal" step="5" /></div>
+              <div class="field full"><div class="btn-row"><button type="submit" class="btn btn-ghost">Save goals</button><span id="goals-flash" class="form-flash"></span></div></div>
+            </form>
+          </div>
+          <div class="card card-pad">
+            <h3 class="panel-title">Claude API key</h3>
+            <p class="panel-sub">Meal photos are analyzed by Claude on your account (pay-per-use, ~2&ndash;3&cent;/photo). Stored only on this Mac. <span id="key-state" class="note"></span></p>
+            <form id="key-form" class="inline-save">
+              <div class="field"><label for="api-key">Anthropic API key</label><input type="password" id="api-key" name="key" placeholder="sk-ant-..." /></div>
+              <button type="submit" class="btn btn-ghost">Save key</button>
+            </form>
+            <div id="key-flash" class="form-flash" style="margin-top:8px"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="grid cols-12">
+        <div class="card chart-card"><div class="chart-head"><h3>Weight</h3></div><div class="chart-box"><canvas id="chart-weight"></canvas></div></div>
+        <div class="card chart-card"><div class="chart-head"><h3>Calories (per day)</h3></div><div class="chart-box"><canvas id="chart-cal"></canvas></div></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Today&rsquo;s meals</h2><span class="note">Tap a photo to enlarge</span></div>
+      <div id="meal-gallery" class="meal-gallery"></div>
+    </section>
+   </div><!-- /tab-diet -->
+
+   <!-- ================= ACTIVITY ================= -->
+   <div id="tab-activity" class="tab" hidden>
+    <section class="section"><div class="section-head"><h2>Activities</h2><span class="note">From Garmin</span></div>
+      <div class="card table-card"><div class="table-scroll">
+        <table class="history"><thead><tr>
+          <th>Date</th><th>Type</th><th>Name</th><th class="num">Duration</th>
+          <th class="num">Distance</th><th class="num">Calories</th><th class="num">Avg HR</th><th class="num">Load</th>
+        </tr></thead><tbody id="activity-body"></tbody></table></div>
+        <div id="activity-empty" class="empty" style="display:none">No activities synced yet.</div>
+      </div>
+    </section>
+    <section class="section"><div class="card chart-card"><div class="chart-head"><h3>Active calories (per day)</h3></div><div class="chart-box"><canvas id="chart-activeCal"></canvas></div></div></section>
+   </div><!-- /tab-activity -->
+
+   <!-- ================= BODY ================= -->
+   <div id="tab-body" class="tab" hidden>
+    <section class="section"><div id="body-stats" class="stat-row"></div></section>
+    <section class="section"><div class="grid cols-12">
+      <div class="card chart-card"><div class="chart-head"><h3>Weight toward goal</h3></div><div class="chart-box"><canvas id="chart-bodyWeight"></canvas></div></div>
+      <div class="card chart-card"><div class="chart-head"><h3>Training readiness</h3></div><div class="chart-box"><canvas id="chart-readiness"></canvas></div></div>
+    </div></section>
+   </div><!-- /tab-body -->
+
+   <!-- ================= INSIGHTS ================= -->
+   <div id="tab-insights" class="tab" hidden>
+    <section class="section">
+      <div class="card card-pad">
+        <div class="section-head" style="margin-bottom:6px"><h2 style="font-size:20px">Your AI daily summary</h2>
+          <button id="summary-refresh" class="btn btn-ghost" style="font-size:12px;padding:7px 12px">Refresh</button></div>
+        <p class="panel-sub">Claude ties together your sleep, activity, and diet for the day.</p>
+        <div id="daily-summary" class="adherence" style="margin-top:6px"></div>
+      </div>
+    </section>
+    <section class="section"><div class="grid cols-2">
+      <div class="card card-pad">
+        <h3 class="panel-title">What affects your sleep</h3>
+        <p class="panel-sub">Diet, activity and body signals vs that night&rsquo;s sleep efficiency.</p>
+        <ul id="insight-sleep" class="factor-list"></ul>
+      </div>
+      <div class="card card-pad">
+        <h3 class="panel-title">What your sleep affects</h3>
+        <p class="panel-sub">Last night&rsquo;s sleep vs the next day (resting HR, readiness, stress).</p>
+        <ul id="insight-nextday" class="factor-list"></ul>
+      </div>
+    </div></section>
+   </div><!-- /tab-insights -->
 
   </main>
 

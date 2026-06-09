@@ -111,9 +111,25 @@ SUBJECTIVE_COLUMNS = [
 ]
 SUBJECTIVE_COLUMN_NAMES = [c for c, _ in SUBJECTIVE_COLUMNS]
 
+# Optional body / daily-summary columns from the wider Garmin pull (nullable).
+# Weight is stored canonically in kilograms; convert on display per weight_unit.
+BODY_COLUMNS = [
+    ("weight_kg", "REAL"),
+    ("body_fat_pct", "REAL"),
+    ("vo2max", "REAL"),
+    ("training_readiness", "INTEGER"),
+    ("hydration_ml", "INTEGER"),
+    ("intensity_moderate_min", "INTEGER"),
+    ("intensity_vigorous_min", "INTEGER"),
+    ("active_calories", "INTEGER"),
+    ("resting_calories", "INTEGER"),
+]
+BODY_COLUMN_NAMES = [c for c, _ in BODY_COLUMNS]
+
 # Every optional/nullable column, and the full ordered column list.
-OPTIONAL_COLUMNS = METRIC_COLUMNS + SUBJECTIVE_COLUMNS
-ALL_COLUMNS = CORE_COLUMNS + METRIC_COLUMN_NAMES + SUBJECTIVE_COLUMN_NAMES
+OPTIONAL_COLUMNS = METRIC_COLUMNS + SUBJECTIVE_COLUMNS + BODY_COLUMNS
+ALL_COLUMNS = (CORE_COLUMNS + METRIC_COLUMN_NAMES + SUBJECTIVE_COLUMN_NAMES
+               + BODY_COLUMN_NAMES)
 
 # Factors correlated against sleep (column -> human label). resting_hr is a core
 # column but is a useful factor too; the *_hours_before_bed are derived.
@@ -134,6 +150,18 @@ CORRELATION_FACTORS = [
     ("mood", "daytime mood"),
     ("rested", "how rested you felt"),
     ("daytime_sleepiness", "daytime sleepiness"),
+    # body / activity / diet (daily) factors
+    ("active_calories", "active calories burned"),
+    ("intensity_vigorous_min", "vigorous-intensity minutes"),
+    ("training_readiness", "training readiness"),
+    ("hydration_ml", "hydration"),
+    ("weight_kg", "body weight"),
+    ("calories_in", "calories eaten"),
+    ("protein_g", "protein eaten"),
+    ("carbs_g", "carbs eaten"),
+    ("fat_g", "fat eaten"),
+    ("activity_load", "training load"),
+    ("activity_count", "number of workouts"),
 ]
 
 # Practical, do-this-tonight takeaways per factor (shown next to each insight).
@@ -171,6 +199,28 @@ FACTOR_ACTIONS = {
         "the window and habits are working.",
     "daytime_sleepiness": "Persistent daytime sleepiness is the symptom that "
         "matters most — if it stays high, revisit the window and see a clinician.",
+    "active_calories": "More active calories often deepen sleep — but very hard "
+        "or very late sessions can backfire; watch the timing.",
+    "intensity_vigorous_min": "Vigorous exercise generally helps sleep when it's "
+        "not too close to bedtime — aim to finish 3+ hours before bed.",
+    "training_readiness": "Readiness blends sleep, HRV and load — when it's low, "
+        "favor an easier day and protect tonight's wind-down.",
+    "hydration_ml": "Stay hydrated through the day, but taper fluids near bedtime "
+        "to cut nighttime awakenings.",
+    "weight_kg": "Weight trends move slowly; line it up against sleep and intake "
+        "over weeks, not single days.",
+    "calories_in": "Big calorie days — especially late — can disrupt sleep; keep "
+        "dinners earlier and lighter.",
+    "protein_g": "Protein supports recovery; spread it across the day rather than "
+        "a heavy late load.",
+    "carbs_g": "Late, heavy carbs can spike then crash overnight — watch evening "
+        "portions.",
+    "fat_g": "High-fat late meals digest slowly and can fragment sleep — keep them "
+        "earlier.",
+    "activity_load": "Training load drives fitness but also fatigue — balance hard "
+        "days with recovery and watch HRV.",
+    "activity_count": "More sessions isn't always better — recovery is where the "
+        "adaptation happens.",
 }
 
 DISCLAIMER = (
@@ -212,6 +262,45 @@ def init_db(conn):
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS activities (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            activity_id   TEXT UNIQUE,
+            date          TEXT,
+            type          TEXT,
+            name          TEXT,
+            start_time    TEXT,
+            duration_min  REAL,
+            distance_m    REAL,
+            calories      INTEGER,
+            avg_hr        INTEGER,
+            max_hr        INTEGER,
+            training_load REAL,
+            notes         TEXT
+        );
+        CREATE TABLE IF NOT EXISTS meals (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            date          TEXT,
+            time          TEXT,
+            photo_path    TEXT,
+            notes         TEXT,
+            calories      INTEGER,
+            protein_g     REAL,
+            carbs_g       REAL,
+            fat_g         REAL,
+            ai_description TEXT,
+            ai_items_json TEXT,
+            status        TEXT,
+            created_at    TEXT,
+            analyzed_at   TEXT
+        );
+        CREATE TABLE IF NOT EXISTS daily_summaries (
+            date         TEXT PRIMARY KEY,
+            summary      TEXT,
+            model        TEXT,
+            generated_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_activities_date ON activities(date);
+        CREATE INDEX IF NOT EXISTS idx_meals_date ON meals(date);
         """
     )
 
@@ -383,6 +472,108 @@ def _hours_before_bed(event_time_str, bedtime):
 def scored_entries(entries):
     """Nights that have objective sleep data (efficiency computed)."""
     return [e for e in entries if e.get("efficiency") is not None]
+
+
+# --------------------------------------------------------------------------- #
+# Activities + meals (separate tables, many rows per day)
+# --------------------------------------------------------------------------- #
+
+ACTIVITY_COLUMNS = ["activity_id", "date", "type", "name", "start_time",
+                    "duration_min", "distance_m", "calories", "avg_hr", "max_hr",
+                    "training_load", "notes"]
+
+
+def upsert_activity(conn, a):
+    """Insert or update one Garmin activity, keyed by its activity_id."""
+    params = {c: a.get(c) for c in ACTIVITY_COLUMNS}
+    cols = ", ".join(ACTIVITY_COLUMNS)
+    vals = ", ".join(f":{c}" for c in ACTIVITY_COLUMNS)
+    setc = ", ".join(f"{c}=excluded.{c}" for c in ACTIVITY_COLUMNS if c != "activity_id")
+    conn.execute(
+        f"INSERT INTO activities ({cols}) VALUES ({vals}) "
+        f"ON CONFLICT(activity_id) DO UPDATE SET {setc}", params)
+    conn.commit()
+
+
+def all_activities(conn, start=None, end=None):
+    q = "SELECT * FROM activities"
+    args = []
+    if start and end:
+        q += " WHERE date >= ? AND date <= ?"
+        args = [start, end]
+    q += " ORDER BY date ASC, start_time ASC"
+    return [dict(r) for r in conn.execute(q, args)]
+
+
+def insert_meal(conn, m):
+    cols = ["date", "time", "photo_path", "notes", "calories", "protein_g",
+            "carbs_g", "fat_g", "ai_description", "ai_items_json", "status",
+            "created_at", "analyzed_at"]
+    params = {c: m.get(c) for c in cols}
+    cur = conn.execute(
+        f"INSERT INTO meals ({', '.join(cols)}) "
+        f"VALUES ({', '.join(':' + c for c in cols)})", params)
+    conn.commit()
+    return cur.lastrowid
+
+
+def update_meal(conn, meal_id, fields):
+    if not fields:
+        return
+    sets = ", ".join(f"{k}=:{k}" for k in fields)
+    params = dict(fields, id=meal_id)
+    conn.execute(f"UPDATE meals SET {sets} WHERE id=:id", params)
+    conn.commit()
+
+
+def get_meal(conn, meal_id):
+    row = conn.execute("SELECT * FROM meals WHERE id=?", (meal_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def all_meals(conn, date=None):
+    if date:
+        rows = conn.execute("SELECT * FROM meals WHERE date=? ORDER BY time", (date,))
+    else:
+        rows = conn.execute("SELECT * FROM meals ORDER BY date ASC, time ASC")
+    return [dict(r) for r in rows]
+
+
+def delete_meal(conn, meal_id):
+    cur = conn.execute("DELETE FROM meals WHERE id=?", (meal_id,))
+    conn.commit()
+    return cur.rowcount
+
+
+def daily_features(conn):
+    """One numeric dict per date, merging sleep/body metrics (entries) with summed
+    meal macros and summed activity load. The cross-domain correlation engine and
+    the Diet/Activity dashboards read from this."""
+    feats = {}
+    for e in all_entries(conn):
+        d = dict(e)
+        d.pop("_date", None)
+        feats[e["date"]] = d
+    # meals -> calories_in / protein_g / carbs_g / fat_g per day
+    for row in conn.execute(
+            "SELECT date, SUM(calories) c, SUM(protein_g) p, SUM(carbs_g) cb, "
+            "SUM(fat_g) f, COUNT(*) n FROM meals GROUP BY date"):
+        f = feats.setdefault(row["date"], {"date": row["date"]})
+        f["calories_in"] = row["c"]
+        f["protein_g"] = row["p"]
+        f["carbs_g"] = row["cb"]
+        f["fat_g"] = row["f"]
+        f["meal_count"] = row["n"]
+    # activities -> load / calories / count per day
+    for row in conn.execute(
+            "SELECT date, SUM(training_load) load, SUM(calories) cal, "
+            "SUM(duration_min) dur, COUNT(*) n FROM activities GROUP BY date"):
+        f = feats.setdefault(row["date"], {"date": row["date"]})
+        f["activity_load"] = row["load"]
+        f["activity_calories"] = row["cal"]
+        f["activity_duration_min"] = row["dur"]
+        f["activity_count"] = row["n"]
+    return [feats[k] for k in sorted(feats)]
 
 
 def trailing(entries, n):
@@ -814,6 +1005,93 @@ def correlate(entries, outcome="efficiency", min_n=5):
         })
     results.sort(key=lambda d: abs(d["r"]), reverse=True)
     return results
+
+
+def correlate_lagged(features, driver, outcome, lag=1, min_n=5):
+    """Correlate day D's `driver` against day D+lag's `outcome` (e.g. last night's
+    sleep vs next-day resting HR). Returns a dict or None."""
+    by_date = {f["date"]: f for f in features}
+    pairs = []
+    for d in sorted(by_date):
+        try:
+            d2 = (parse_date(d) + timedelta(days=lag)).isoformat()
+        except (ValueError, TypeError):
+            continue
+        a, b = by_date.get(d), by_date.get(d2)
+        if a and b and a.get(driver) is not None and b.get(outcome) is not None:
+            pairs.append((a[driver], b[outcome]))
+    if len(pairs) < min_n:
+        return None
+    r = _pearson([p[0] for p in pairs], [p[1] for p in pairs])
+    if r is None:
+        return None
+    return {"driver": driver, "outcome": outcome, "lag": lag, "n": len(pairs),
+            "r": round(r, 2), "strength": _strength(r)}
+
+
+def insights_data(conn):
+    """Cross-domain insights: what (diet/activity/body) tracks with that night's
+    sleep, and what last night's sleep predicts about the next day."""
+    feats = daily_features(conn)
+    sleep_factors = correlate(feats, "efficiency")
+
+    drivers = [("efficiency", "sleep efficiency"),
+               ("hrv_overnight", "overnight HRV"),
+               ("total_sleep_min", "total sleep")]
+    outcomes = [("resting_hr", "next-day resting HR"),
+                ("training_readiness", "next-day training readiness"),
+                ("active_calories", "next-day activity calories"),
+                ("stress_avg", "next-day stress")]
+    next_day = []
+    for dcol, dlabel in drivers:
+        for ocol, olabel in outcomes:
+            res = correlate_lagged(feats, dcol, ocol, 1)
+            if res and res["strength"] != "negligible":
+                direction = "higher" if res["r"] > 0 else "lower"
+                res["label"] = f"{dlabel} → {olabel}"
+                res["message"] = (
+                    f"Days after higher {dlabel} tend to have {direction} {olabel} "
+                    f"(r={res['r']:+.2f}, {res['n']} days).")
+                next_day.append(res)
+    next_day.sort(key=lambda d: abs(d["r"]), reverse=True)
+    return {"sleep_factors": sleep_factors, "next_day_factors": next_day}
+
+
+def day_facts_text(conn, d):
+    """Compact human-readable summary of one day's sleep + activity + diet, for
+    the AI daily-summary prompt."""
+    lines = [f"Date: {d}"]
+    row = next((e for e in all_entries(conn) if e["date"] == d), None)
+    if row:
+        if row.get("efficiency") is not None:
+            lines.append(
+                f"Sleep: {minutes_to_hm(row['total_sleep_min'])} "
+                f"({row['efficiency']:.0f}% efficiency), bedtime {row['bedtime']} -> "
+                f"wake {row['wake_time']}, restless {row['restless_moments']}.")
+        for k, lab in [("hrv_overnight", "overnight HRV"), ("resting_hr", "resting HR"),
+                       ("stress_avg", "avg stress"), ("body_battery_low", "Body Battery low"),
+                       ("training_readiness", "training readiness"), ("steps", "steps"),
+                       ("active_calories", "active calories"), ("weight_kg", "weight (kg)")]:
+            if row.get(k) is not None:
+                lines.append(f"{lab}: {row[k]}")
+        for k, lab in [("rested", "felt rested (1-5)"), ("mood", "mood (1-5)"),
+                       ("daytime_sleepiness", "daytime sleepiness (1-5)"),
+                       ("caffeine_mg", "caffeine mg")]:
+            if row.get(k) is not None:
+                lines.append(f"{lab}: {row[k]}")
+    acts = all_activities(conn, d, d)
+    if acts:
+        lines.append("Workouts: " + "; ".join(
+            f"{a.get('type') or 'activity'} {a.get('duration_min') or '?'}min "
+            f"{a.get('calories') or '?'}kcal" for a in acts))
+    meals = all_meals(conn, d)
+    if meals:
+        tot = sum(m.get("calories") or 0 for m in meals)
+        lines.append(f"Meals ({len(meals)}, ~{tot} kcal total): " + "; ".join(
+            f"{m.get('ai_description') or m.get('notes') or 'meal'} "
+            f"({m.get('calories') or '?'}kcal, P{m.get('protein_g') or '?'}/"
+            f"C{m.get('carbs_g') or '?'}/F{m.get('fat_g') or '?'})" for m in meals))
+    return "\n".join(lines)
 
 
 def report_data(conn):
@@ -1423,6 +1701,12 @@ def fetch_garmin_night(api, ds, wake_default=DEFAULT_WAKE_TIME):
     entry["stress_avg"] = summary.get("averageStressLevel")
     entry["body_battery_high"] = summary.get("bodyBatteryHighestValue")
     entry["body_battery_low"] = summary.get("bodyBatteryLowestValue")
+    entry["intensity_moderate_min"] = summary.get("moderateIntensityMinutes")
+    entry["intensity_vigorous_min"] = summary.get("vigorousIntensityMinutes")
+    entry["active_calories"] = summary.get("activeKilocalories")
+    entry["resting_calories"] = summary.get("bmrKilocalories")
+
+    _fetch_body_metrics(api, ds, entry)
 
     try:
         hrv = api.get_hrv_data(ds) or {}
@@ -1447,6 +1731,71 @@ def fetch_garmin_night(api, ds, wake_default=DEFAULT_WAKE_TIME):
             pass
 
     return entry
+
+
+def _fetch_body_metrics(api, ds, entry):
+    """Best-effort weight / body-fat / VO2max / readiness / hydration pulls.
+    Each is wrapped so a missing endpoint never aborts the day's sync."""
+    try:
+        bc = api.get_body_composition(ds) or {}
+        avg = (bc.get("totalAverage") or {}) if isinstance(bc, dict) else {}
+        grams = avg.get("weight")
+        if grams:
+            entry["weight_kg"] = round(grams / 1000.0, 2)
+        if avg.get("bodyFat") is not None:
+            entry["body_fat_pct"] = avg.get("bodyFat")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        tr = api.get_training_readiness(ds)
+        if isinstance(tr, list) and tr:
+            entry["training_readiness"] = tr[0].get("score")
+        elif isinstance(tr, dict):
+            entry["training_readiness"] = tr.get("score")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        mm = api.get_max_metrics(ds)
+        rec = mm[0] if isinstance(mm, list) and mm else (mm or {})
+        gen = (rec or {}).get("generic") or {}
+        entry["vo2max"] = gen.get("vo2MaxValue") or gen.get("vo2MaxPreciseValue")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        hy = api.get_hydration_data(ds) or {}
+        entry["hydration_ml"] = hy.get("valueInML") or hy.get("dailyAverageinML")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def fetch_garmin_activities(api, start, end):
+    """Return a list of activity dicts (ready for upsert_activity) for a date
+    range. Defensive: returns [] if the endpoint is unavailable."""
+    try:
+        raw = api.get_activities_by_date(start, end)
+    except Exception:  # noqa: BLE001
+        return []
+    out = []
+    for a in (raw or []):
+        start_local = a.get("startTimeLocal") or ""
+        date_part = start_local.split(" ")[0] if start_local else None
+        time_part = start_local.split(" ")[1][:5] if " " in start_local else None
+        dur_s = a.get("duration") or 0
+        out.append({
+            "activity_id": str(a.get("activityId")),
+            "date": date_part,
+            "type": ((a.get("activityType") or {}).get("typeKey")),
+            "name": a.get("activityName"),
+            "start_time": time_part,
+            "duration_min": round(dur_s / 60.0, 1) if dur_s else None,
+            "distance_m": a.get("distance"),
+            "calories": int(a["calories"]) if a.get("calories") else None,
+            "avg_hr": int(a["averageHR"]) if a.get("averageHR") else None,
+            "max_hr": int(a["maxHR"]) if a.get("maxHR") else None,
+            "training_load": a.get("activityTrainingLoad"),
+            "notes": None,
+        })
+    return out
 
 
 def _import_garmin():
@@ -1561,33 +1910,51 @@ def cmd_sync_garmin(conn, args):
           + (f", steps {entry['steps']}" if entry.get('steps') else "") + ".")
 
 
-def cmd_sync_recent(conn, args):
-    """Pull the last N days from Garmin (default 3) — used by the daily job to
-    catch up. Idempotent: re-runs merge, never duplicating or wiping check-ins."""
+def sync_garmin_range(conn, days=3):
+    """Pull the last N days (sleep nights + activities) from Garmin. Logs in once,
+    idempotent (merges). Returns a counts dict. Shared by the CLI and the web
+    Sync button."""
     import time as _time
-    days = max(1, args.days)
+    days = max(1, days)
     wake_default = get_setting(conn, "wake_time", DEFAULT_WAKE_TIME)
-    try:
-        api = garmin_api()
-    except RuntimeError as exc:
-        print(exc)
-        return
+    api = garmin_api()  # raises RuntimeError if not authorized
     saved = skipped = failed = 0
     today = date.today()
     for i in range(days):
         ds = (today - timedelta(days=i)).isoformat()
         try:
             entry = _sync_one(conn, api, ds, wake_default)
-            if entry:
-                saved += 1
-            else:
-                skipped += 1
+            saved += 1 if entry else 0
+            skipped += 0 if entry else 1
         except Exception as exc:  # noqa: BLE001
             print(f"  {ds}: error: {exc}")
             failed += 1
-        _time.sleep(0.7)
+        _time.sleep(0.5)
+    # activities for the range (one call)
+    acts = 0
+    try:
+        start = (today - timedelta(days=days - 1)).isoformat()
+        for a in fetch_garmin_activities(api, start, today.isoformat()):
+            if a.get("activity_id"):
+                upsert_activity(conn, a)
+                acts += 1
+    except Exception as exc:  # noqa: BLE001
+        print(f"  activities: error: {exc}")
+    set_setting(conn, "last_synced", datetime.now().isoformat(timespec="seconds"))
+    return {"saved": saved, "skipped": skipped, "failed": failed, "activities": acts}
+
+
+def cmd_sync_recent(conn, args):
+    """Pull the last N days from Garmin (default 3) — used by the daily job to
+    catch up. Idempotent: re-runs merge, never duplicating or wiping check-ins."""
+    try:
+        r = sync_garmin_range(conn, args.days)
+    except RuntimeError as exc:
+        print(exc)
+        return
     msg = (f"{datetime.now().isoformat(timespec='seconds')}  sync-recent "
-           f"{days}d: saved {saved}, no-data {skipped}, errors {failed}")
+           f"{args.days}d: saved {r['saved']}, no-data {r['skipped']}, "
+           f"errors {r['failed']}, activities {r['activities']}")
     print(msg)
     try:
         with open(DAILY_SYNC_LOG, "a") as fh:
@@ -1601,9 +1968,11 @@ def _launchd_plist_path():
         f"~/Library/LaunchAgents/{LAUNCHD_LABEL}.plist")
 
 
-def build_launchd_plist(hour):
-    """Return the LaunchAgent plist dict for the daily sync (pure, testable)."""
-    return {
+def build_launchd_plist(hour, every_hours=3):
+    """Return the LaunchAgent plist dict for the Garmin sync (pure, testable).
+    Runs at `hour` each morning AND every `every_hours` hours (Garmin has no
+    consumer webhook, so frequent polling is the realistic substitute)."""
+    plist = {
         "Label": LAUNCHD_LABEL,
         "ProgramArguments": [sys.executable, os.path.abspath(__file__),
                              "sync-recent", "--days", "3"],
@@ -1613,6 +1982,9 @@ def build_launchd_plist(hour):
         "StandardOutPath": DAILY_SYNC_LOG,
         "StandardErrorPath": DAILY_SYNC_LOG,
     }
+    if every_hours and every_hours > 0:
+        plist["StartInterval"] = int(every_hours) * 3600
+    return plist
 
 
 def cmd_install_daily_sync(conn, args):
@@ -1631,7 +2003,7 @@ def cmd_install_daily_sync(conn, args):
     plist_path = _launchd_plist_path()
     os.makedirs(os.path.dirname(plist_path), exist_ok=True)
     with open(plist_path, "wb") as fh:
-        plistlib.dump(build_launchd_plist(args.hour), fh)
+        plistlib.dump(build_launchd_plist(args.hour, args.every_hours), fh)
 
     # Reload (try modern bootstrap, fall back to legacy load).
     uid = os.getuid()
@@ -1744,7 +2116,9 @@ def build_parser():
     pid = sub.add_parser("install-daily-sync",
                          help="macOS: run the Garmin sync automatically each morning")
     pid.add_argument("--hour", type=int, default=9,
-                     help="hour of day to run (0-23, default 9)")
+                     help="hour of day for the morning run (0-23, default 9)")
+    pid.add_argument("--every-hours", type=int, default=3, dest="every_hours",
+                     help="also poll every N hours (default 3; 0 to disable)")
     pid.set_defaults(func=cmd_install_daily_sync)
 
     pud = sub.add_parser("uninstall-daily-sync",

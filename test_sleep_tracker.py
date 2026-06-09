@@ -455,5 +455,114 @@ class TestGarminDateOffset(unittest.TestCase):
         self.assertIsNotNone(rows[0]["efficiency"])
 
 
+class TestHealthData(unittest.TestCase):
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.conn = st.connect(self.path)
+        st.init_db(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+        os.remove(self.path)
+
+    def test_activities_upsert_and_query(self):
+        st.upsert_activity(self.conn, {"activity_id": "A1", "date": "2026-06-07",
+                                       "type": "running", "calories": 400,
+                                       "training_load": 100})
+        st.upsert_activity(self.conn, {"activity_id": "A1", "date": "2026-06-07",
+                                       "type": "running", "calories": 450})  # update
+        rows = st.all_activities(self.conn)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["calories"], 450)
+
+    def test_meals_crud(self):
+        mid = st.insert_meal(self.conn, {"date": "2026-06-07", "calories": 600,
+                                         "protein_g": 30, "status": "analyzed"})
+        st.update_meal(self.conn, mid, {"calories": 650})
+        self.assertEqual(st.get_meal(self.conn, mid)["calories"], 650)
+        self.assertEqual(len(st.all_meals(self.conn, "2026-06-07")), 1)
+        self.assertEqual(st.delete_meal(self.conn, mid), 1)
+
+    def test_daily_features_merges_domains(self):
+        st.upsert_entry(self.conn, {"date": "2026-06-07", "bedtime": "23:00",
+                                    "wake_time": "07:00", "total_sleep_min": 420,
+                                    "restless_moments": 5, "weight_kg": 80.0,
+                                    "active_calories": 600})
+        st.upsert_activity(self.conn, {"activity_id": "A1", "date": "2026-06-07",
+                                       "calories": 400, "training_load": 90})
+        st.insert_meal(self.conn, {"date": "2026-06-07", "calories": 700, "protein_g": 40})
+        st.insert_meal(self.conn, {"date": "2026-06-07", "calories": 800, "protein_g": 50})
+        f = next(x for x in st.daily_features(self.conn) if x["date"] == "2026-06-07")
+        self.assertEqual(f["calories_in"], 1500)
+        self.assertEqual(f["protein_g"], 90)
+        self.assertEqual(f["activity_load"], 90)
+        self.assertEqual(f["weight_kg"], 80.0)
+        self.assertIsNotNone(f["efficiency"])
+
+    def test_correlate_picks_up_diet_factor(self):
+        # calories_in inversely related to efficiency across 8 days
+        feats = []
+        for i in range(8):
+            feats.append({"date": f"2026-06-0{i+1}", "efficiency": 95 - i * 3,
+                          "calories_in": 1800 + i * 150, "restless_per_hr": None})
+        rows = st.correlate(feats, "efficiency", min_n=5)
+        cal = next(r for r in rows if r["column"] == "calories_in")
+        self.assertLess(cal["r"], -0.9)
+
+    def test_correlate_lagged_next_day(self):
+        # higher efficiency on day D -> lower resting HR on D+1
+        feats = []
+        for i in range(10):
+            feats.append({"date": f"2026-06-{i+1:02d}", "efficiency": 80 + i,
+                          "resting_hr": 60 - i})
+        res = st.correlate_lagged(feats, "efficiency", "resting_hr", lag=1, min_n=5)
+        self.assertIsNotNone(res)
+        self.assertLess(res["r"], -0.9)
+
+
+class TestMealAI(unittest.TestCase):
+    def test_analyze_meal_photo_with_fake_client(self):
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow not installed")
+        import ai
+
+        # a tiny temp image
+        fd, img_path = tempfile.mkstemp(suffix=".jpg")
+        os.close(fd)
+        Image.new("RGB", (32, 32), (120, 80, 60)).save(img_path, "JPEG")
+
+        class _Parsed:
+            calories, protein_g, carbs_g, fat_g = 540, 35.0, 50.0, 18.0
+            description = "Grilled chicken with rice and veg"
+            items = ["chicken", "rice", "broccoli"]
+
+        class _Resp:
+            parsed_output = _Parsed()
+
+        class _Msgs:
+            def parse(self, **kw):
+                # assert the image + text were passed
+                content = kw["messages"][0]["content"]
+                assert any(b["type"] == "image" for b in content)
+                return _Resp()
+
+        class _FakeClient:
+            messages = _Msgs()
+
+        orig = ai._client
+        ai._client = lambda api_key: _FakeClient()
+        try:
+            out = ai.analyze_meal_photo(img_path, notes="big portion", api_key="x")
+        finally:
+            ai._client = orig
+            os.remove(img_path)
+        self.assertEqual(out["calories"], 540)
+        self.assertEqual(out["protein_g"], 35.0)
+        self.assertIn("chicken", out["ai_items_json"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -15,7 +15,18 @@
     getWake: function () { return get("/api/settings/wake"); },
     setWake: function (w) { return send("PUT", "/api/settings/wake", { wake: w }); },
     addEntry: function (e) { return send("POST", "/api/entries", e); },
-    delEntry: function (d) { return send("DELETE", "/api/entries/" + encodeURIComponent(d)); }
+    delEntry: function (d) { return send("DELETE", "/api/entries/" + encodeURIComponent(d)); },
+    sync: function () { return send("POST", "/api/sync"); },
+    settings: function () { return get("/api/settings"); },
+    setSettings: function (s) { return send("PUT", "/api/settings", s); },
+    setKey: function (k) { return send("PUT", "/api/settings/anthropic-key", { key: k }); },
+    diet: function (d) { return get("/api/diet" + (d ? "?date=" + d : "")); },
+    meals: function (d) { return get("/api/meals" + (d ? "?date=" + d : "")); },
+    delMeal: function (id) { return send("DELETE", "/api/meals/" + id); },
+    activities: function () { return get("/api/activities"); },
+    insights: function () { return get("/api/insights"); },
+    summary: function (d, refresh) { return get("/api/summary/daily?date=" + d + (refresh ? "&refresh=true" : "")); },
+    uploadMeal: function (formData) { return fetch("/api/meals", { method: "POST", body: formData }).then(checkOk); }
   };
   function get(url) { return fetch(url).then(checkOk); }
   function send(method, url, body) {
@@ -398,6 +409,211 @@
       : "→ attaches to last night's sleep.") + " Sleep date: " + d;
   }
 
+  /* ---------------- tabs ---------------- */
+  var TABS = ["today", "diet", "activity", "body", "insights"];
+  var tabLoaded = {};
+  function showTab(name) {
+    if (TABS.indexOf(name) < 0) name = "today";
+    TABS.forEach(function (t) {
+      var sec = $("#tab-" + t); if (sec) sec.hidden = (t !== name);
+    });
+    document.querySelectorAll(".tabbtn").forEach(function (b) {
+      b.classList.toggle("tab-on", b.getAttribute("data-tab") === name);
+    });
+    if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
+    loadTab(name);
+  }
+  function loadTab(name) {
+    if (name === "diet") loadDiet();
+    else if (name === "activity") loadActivity();
+    else if (name === "body") loadBody();
+    else if (name === "insights") loadInsights();
+  }
+
+  /* ---------------- sync ---------------- */
+  function onSync() {
+    var btn = $("#sync-btn"); btn.disabled = true;
+    $("#sync-status").textContent = "Syncing…";
+    api.sync().then(function (r) {
+      $("#sync-status").textContent = "Synced " + r.saved + " nights, " + r.activities + " activities";
+      btn.disabled = false;
+      refresh();
+      tabLoaded = {}; loadTab(currentTab());
+    }).catch(function (e) {
+      $("#sync-status").textContent = "Sync failed";
+      btn.disabled = false; showErr(e);
+    });
+  }
+  function currentTab() { return (location.hash || "#today").slice(1); }
+  function showSyncTime(t) { if (t) $("#sync-status").textContent = "Last synced " + fmtDate(t.slice(0, 10)); }
+
+  /* ---------------- diet ---------------- */
+  var dietCharts = {};
+  function loadDiet() {
+    var today = todayISO();
+    if (!$("#meal-date").value) $("#meal-date").value = today;
+    api.diet(today).then(renderDiet).catch(showErr);
+    api.settings().then(fillSettings);
+  }
+  function fillSettings(s) {
+    $("#g-unit").value = s.weight_unit || "lb";
+    $("#g-weight").value = s.weight_goal || "";
+    $("#g-cal").value = s.calorie_goal || "";
+    $("#g-prot").value = s.protein_goal || "";
+    $("#g-carb").value = s.carb_goal || "";
+    $("#g-fat").value = s.fat_goal || "";
+    $("#key-state").textContent = s.anthropic_key_set ? "✓ key saved" : "no key yet";
+    if (s.last_synced) showSyncTime(s.last_synced);
+  }
+  function ring(label, val, goal, unit) {
+    var pct = goal ? Math.min(100, Math.round((val / goal) * 100)) : null;
+    return el("div", { class: "stat" }, [
+      el("div", { class: "k", text: label }),
+      el("div", { class: "v", html: Math.round(val || 0) + (goal ? '<span class="u">/' + Math.round(goal) + unit + "</span>" : '<span class="u">' + unit + "</span>") }),
+      el("div", { class: "sub", text: pct == null ? "set a goal" : pct + "% of goal" })
+    ]);
+  }
+  function renderDiet(d) {
+    var net = d.net_calories;
+    $("#diet-hero").innerHTML = "";
+    $("#diet-hero").appendChild(el("div", { class: "hero-grid" }, [
+      el("div", {}, [
+        el("div", { class: "kicker hero-kicker", text: "Today · net calories" }),
+        el("div", { class: "hero-bedtime", html: (net == null ? "—" : net) + '<span class="ampm">kcal</span>' }),
+        el("div", { class: "hero-caption", text: d.calories_out ? ("Eaten " + d.calories_in + " · burned " + d.calories_out) : ("Eaten " + d.calories_in + " · sync Garmin for calories out") })
+      ]),
+      el("div", { class: "hero-side" }, [
+        el("div", { class: "hero-row" }, [el("span", { class: "lbl", text: "Weight" }), el("span", { class: "val", text: d.weight == null ? "—" : d.weight + " " + d.weight_unit })]),
+        el("div", { class: "hero-row" }, [el("span", { class: "lbl", text: "Goal" }), el("span", { class: "val", text: d.goals.weight == null ? "—" : d.goals.weight + " " + d.weight_unit })])
+      ])
+    ]));
+    var row = $("#diet-stats"); row.innerHTML = "";
+    row.appendChild(ring("Calories", d.calories_in, d.goals.calories, " kcal"));
+    row.appendChild(ring("Protein", d.protein_g, d.goals.protein, " g"));
+    row.appendChild(ring("Carbs", d.carbs_g, d.goals.carbs, " g"));
+    row.appendChild(ring("Fat", d.fat_g, d.goals.fat, " g"));
+    renderMealGallery(d.meals);
+    lineChart("chart-weight", dietCharts, (d.weight_series || []).map(function (w) { return { date: w.date, v: w.weight }; }), "Weight", COLORS.eff);
+    barChart("chart-cal", dietCharts, (d.calorie_series || []).map(function (c) { return { date: c.date, v: c.calories }; }), "kcal");
+  }
+  function renderMealGallery(meals) {
+    var g = $("#meal-gallery"); g.innerHTML = "";
+    if (!meals.length) { g.appendChild(el("div", { class: "empty", text: "No meals logged today." })); return; }
+    meals.forEach(function (m) {
+      var card = el("div", { class: "meal-card" }, [
+        m.photo_url ? el("img", { class: "meal-thumb", src: m.photo_url, alt: "" }) : el("div", { class: "meal-thumb meal-noimg", text: "no photo" }),
+        el("div", { class: "meal-body" }, [
+          el("div", { class: "meal-cal", text: (m.calories == null ? "—" : m.calories + " kcal") + (m.status === "pending" ? " · analyzing…" : m.status === "failed" ? " · analysis failed" : "") }),
+          el("div", { class: "meal-macros", text: m.calories == null ? (m.notes || "") : ("P " + (m.protein_g || 0) + " · C " + (m.carbs_g || 0) + " · F " + (m.fat_g || 0)) }),
+          el("div", { class: "meal-desc", text: m.ai_description || m.notes || "" })
+        ]),
+        (function () { var b = el("button", { class: "del-btn", title: "Delete", html: "&times;" }); b.addEventListener("click", function () { api.delMeal(m.id).then(loadDiet); }); return b; })()
+      ]);
+      g.appendChild(card);
+    });
+  }
+  function onMealSubmit(ev) {
+    ev.preventDefault();
+    var fd = new FormData();
+    var file = $("#meal-photo").files[0];
+    if (file) fd.append("photo", file);
+    fd.append("date", $("#meal-date").value || todayISO());
+    if ($("#meal-time").value) fd.append("time", $("#meal-time").value);
+    fd.append("notes", $("#meal-notes").value || "");
+    flash("meal-flash", file ? "Analyzing photo…" : "Saving…", "ok");
+    api.uploadMeal(fd).then(function () {
+      flash("meal-flash", "Saved.", "ok");
+      ev.target.reset(); $("#meal-preview").hidden = true; $("#meal-date").value = todayISO();
+      loadDiet();
+    }).catch(function (e) { flash("meal-flash", "Failed: " + (e.message || e), "err"); });
+  }
+
+  /* ---------------- activity ---------------- */
+  function loadActivity() {
+    api.activities().then(function (acts) {
+      var body = $("#activity-body"); body.innerHTML = "";
+      $("#activity-empty").style.display = acts.length ? "none" : "";
+      acts.slice().reverse().forEach(function (a) {
+        body.appendChild(el("tr", {}, [
+          el("td", { class: "date", text: a.date ? fmtDate(a.date) : "—" }),
+          el("td", { text: (a.type || "").replace(/_/g, " ") }),
+          el("td", { text: a.name || "—" }),
+          el("td", { class: "num", text: a.duration_min == null ? "—" : a.duration_min + " min" }),
+          el("td", { class: "num", text: a.distance_m == null ? "—" : (a.distance_m / 1000).toFixed(2) + " km" }),
+          el("td", { class: "num", text: a.calories == null ? "—" : a.calories }),
+          el("td", { class: "num", text: a.avg_hr == null ? "—" : a.avg_hr }),
+          el("td", { class: "num", text: a.training_load == null ? "—" : Math.round(a.training_load) })
+        ]));
+      });
+      var byDay = {};
+      acts.forEach(function (a) { if (a.date && a.calories) byDay[a.date] = (byDay[a.date] || 0) + a.calories; });
+      var series = Object.keys(byDay).sort().slice(-30).map(function (d) { return { date: d, v: byDay[d] }; });
+      barChart("chart-activeCal", dietCharts, series, "kcal");
+    }).catch(showErr);
+  }
+
+  /* ---------------- body ---------------- */
+  function loadBody() {
+    Promise.all([api.entries(), api.diet(todayISO())]).then(function (res) {
+      var entries = res[0], d = res[1];
+      var latest = function (k) { for (var i = entries.length - 1; i >= 0; i--) if (entries[i][k] != null) return entries[i][k]; return null; };
+      var row = $("#body-stats"); row.innerHTML = "";
+      row.appendChild(statTile("Weight", d.weight == null ? "—" : d.weight, " " + d.weight_unit, d.goals.weight ? "goal " + d.goals.weight : ""));
+      row.appendChild(statTile("VO₂max", latest("vo2max") || "—", "", ""));
+      row.appendChild(statTile("Training readiness", latest("training_readiness") || "—", "", ""));
+      row.appendChild(statTile("Body fat", latest("body_fat_pct") == null ? "—" : latest("body_fat_pct"), "%", ""));
+      lineChart("chart-bodyWeight", dietCharts, (d.weight_series || []).map(function (w) { return { date: w.date, v: w.weight }; }), "Weight", COLORS.eff, d.goals.weight);
+      var rr = entries.filter(function (e) { return e.training_readiness != null; }).slice(-30).map(function (e) { return { date: e.date, v: e.training_readiness }; });
+      barChart("chart-readiness", dietCharts, rr, "");
+    }).catch(showErr);
+  }
+
+  /* ---------------- insights ---------------- */
+  function loadInsights() {
+    api.insights().then(function (d) {
+      renderFactorList($("#insight-sleep"), d.sleep_factors, "Log a couple of weeks across diet, activity and sleep to see what moves your sleep.");
+      renderFactorList($("#insight-nextday"), d.next_day_factors, "Not enough paired days yet.");
+    }).catch(showErr);
+    var today = todayISO();
+    api.summary(today, false).then(function (s) {
+      $("#daily-summary").innerHTML = s.summary ? s.summary.replace(/\n/g, "<br>") : "";
+    }).catch(function () { $("#daily-summary").textContent = "Add an API key (Diet tab) to generate a daily summary."; });
+  }
+  function renderFactorList(ul, items, emptyMsg) {
+    ul.innerHTML = "";
+    var rows = (items || []).filter(function (f) { return f.strength !== "negligible"; });
+    if (!rows.length) { ul.appendChild(el("li", { class: "factor empty-factor", text: emptyMsg })); return; }
+    rows.slice(0, 8).forEach(function (f) {
+      ul.appendChild(el("li", { class: "factor" }, [
+        el("span", { class: "factor-chip " + (f.r > 0 ? "up" : "down"), text: (f.r > 0 ? "+" : "") + f.r.toFixed(2) }),
+        el("div", { class: "factor-body" }, [
+          el("div", { class: "factor-msg", text: f.message || f.label }),
+          f.action ? el("div", { class: "factor-action", text: f.action }) : null
+        ])
+      ]));
+    });
+  }
+
+  /* ---------------- small chart helpers ---------------- */
+  function lineChart(canvasId, store, series, label, color, goal) {
+    var ctx = $("#" + canvasId); if (!ctx) return;
+    if (store[canvasId]) store[canvasId].destroy();
+    var labels = series.map(function (s) { return fmtDate(s.date, { month: "short", day: "numeric" }); });
+    var ds = [{ label: label, data: series.map(function (s) { return s.v; }), borderColor: color, backgroundColor: COLORS.effFill, borderWidth: 2.5, fill: true, tension: 0.3, pointRadius: 0 }];
+    if (goal) ds.push({ label: "goal", data: series.map(function () { return goal; }), borderColor: COLORS.target, borderWidth: 1.5, borderDash: [5, 5], pointRadius: 0, fill: false });
+    store[canvasId] = new Chart(ctx, { type: "line", data: { labels: labels, datasets: ds }, options: chartOpts(baseScales("", undefined), function (c) { return c.parsed.y; }) });
+  }
+  function barChart(canvasId, store, series, unit) {
+    var ctx = $("#" + canvasId); if (!ctx) return;
+    if (store[canvasId]) store[canvasId].destroy();
+    var labels = series.map(function (s) { return fmtDate(s.date, { month: "short", day: "numeric" }); });
+    store[canvasId] = new Chart(ctx, {
+      type: "bar",
+      data: { labels: labels, datasets: [{ data: series.map(function (s) { return s.v; }), backgroundColor: COLORS.eff, borderRadius: 4, maxBarThickness: 18 }] },
+      options: chartOpts(baseScales(unit || "", undefined), function (c) { return c.parsed.y + (unit || ""); })
+    });
+  }
+
   function init() {
     api.getWake().then(function (s) {
       var w = (s && s.wake) || "06:30";
@@ -415,6 +631,34 @@
     applyCheckinMode("tonight");
     $("#checkin-form").addEventListener("submit", onSubmit);
     $("#wake-form").addEventListener("submit", onSaveWake);
+
+    // tabs + sync + diet handlers
+    document.querySelectorAll(".tabbtn").forEach(function (b) {
+      b.addEventListener("click", function () { showTab(b.getAttribute("data-tab")); });
+    });
+    window.addEventListener("hashchange", function () { showTab(currentTab()); });
+    $("#sync-btn").addEventListener("click", onSync);
+    $("#meal-form").addEventListener("submit", onMealSubmit);
+    $("#meal-photo").addEventListener("change", function () {
+      var f = this.files[0], p = $("#meal-preview");
+      if (f) { p.src = URL.createObjectURL(f); p.hidden = false; } else { p.hidden = true; }
+    });
+    $("#goals-form").addEventListener("submit", function (ev) {
+      ev.preventDefault();
+      var s = { weight_unit: $("#g-unit").value, weight_goal: $("#g-weight").value, calorie_goal: $("#g-cal").value, protein_goal: $("#g-prot").value, carb_goal: $("#g-carb").value, fat_goal: $("#g-fat").value };
+      api.setSettings(s).then(function () { flash("goals-flash", "Saved.", "ok"); loadDiet(); }).catch(showErr);
+    });
+    $("#key-form").addEventListener("submit", function (ev) {
+      ev.preventDefault();
+      var k = $("#api-key").value.trim(); if (!k) return;
+      api.setKey(k).then(function () { flash("key-flash", "Key saved.", "ok"); $("#api-key").value = ""; $("#key-state").textContent = "✓ key saved"; }).catch(showErr);
+    });
+    $("#summary-refresh").addEventListener("click", function () {
+      $("#daily-summary").textContent = "Generating…";
+      api.summary(todayISO(), true).then(function (s) { $("#daily-summary").innerHTML = s.summary.replace(/\n/g, "<br>"); }).catch(showErr);
+    });
+
+    showTab(currentTab());
     refresh();
   }
 
