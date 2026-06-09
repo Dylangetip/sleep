@@ -452,6 +452,17 @@ async def _unhandled(request, exc):  # keep API errors as JSON, not HTML
     return JSONResponse({"error": str(exc)}, status_code=500)
 
 
+@app.middleware("http")
+async def _no_stale_assets(request, call_next):
+    """The frontend has no build step, so make sure browsers always revalidate
+    app.js / styles.css / index.html instead of serving a stale cached copy."""
+    resp = await call_next(request)
+    p = request.url.path
+    if p == "/" or p.endswith((".js", ".css", ".html")):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
 # Meal photos (read-only) from the app-data dir.
 app.mount("/photos", StaticFiles(directory=MEALS_DIR), name="photos")
 

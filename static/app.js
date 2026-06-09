@@ -614,51 +614,62 @@
     });
   }
 
+  function _try(fn) { try { fn(); } catch (e) { console.error("init block failed:", e); } }
+
   function init() {
-    api.getWake().then(function (s) {
-      var w = (s && s.wake) || "06:30";
-      $("#wake-setting").value = w;
+    // Tabs + sync FIRST — navigation must work even if another block fails.
+    _try(function () {
+      document.querySelectorAll(".tabbtn").forEach(function (b) {
+        b.addEventListener("click", function () { showTab(b.getAttribute("data-tab")); });
+      });
+      window.addEventListener("hashchange", function () { showTab(currentTab()); });
+      showTab(currentTab());
     });
-    $("#for-tonight").addEventListener("click", function () { applyCheckinMode("tonight"); });
-    $("#for-lastnight").addEventListener("click", function () { applyCheckinMode("lastnight"); });
-    $("#for-custom").addEventListener("click", function () { applyCheckinMode("custom"); });
-    $("#form-date").addEventListener("input", function () {
-      checkinMode = "custom";
-      ["tonight", "lastnight", "custom"].forEach(function (m) {
-        $("#for-" + m).classList.toggle("seg-on", m === "custom");
+    _try(function () { $("#sync-btn").addEventListener("click", onSync); });
+
+    // sleep check-in
+    _try(function () {
+      api.getWake().then(function (s) {
+        var w = (s && s.wake) || "06:30";
+        $("#wake-setting").value = w;
+      });
+      $("#for-tonight").addEventListener("click", function () { applyCheckinMode("tonight"); });
+      $("#for-lastnight").addEventListener("click", function () { applyCheckinMode("lastnight"); });
+      $("#for-custom").addEventListener("click", function () { applyCheckinMode("custom"); });
+      $("#form-date").addEventListener("input", function () {
+        checkinMode = "custom";
+        ["tonight", "lastnight", "custom"].forEach(function (m) {
+          $("#for-" + m).classList.toggle("seg-on", m === "custom");
+        });
+      });
+      applyCheckinMode("tonight");
+      $("#checkin-form").addEventListener("submit", onSubmit);
+      $("#wake-form").addEventListener("submit", onSaveWake);
+    });
+
+    // diet + settings + insights handlers
+    _try(function () {
+      $("#meal-form").addEventListener("submit", onMealSubmit);
+      $("#meal-photo").addEventListener("change", function () {
+        var f = this.files[0], p = $("#meal-preview");
+        if (f) { p.src = URL.createObjectURL(f); p.hidden = false; } else { p.hidden = true; }
+      });
+      $("#goals-form").addEventListener("submit", function (ev) {
+        ev.preventDefault();
+        var s = { weight_unit: $("#g-unit").value, weight_goal: $("#g-weight").value, calorie_goal: $("#g-cal").value, protein_goal: $("#g-prot").value, carb_goal: $("#g-carb").value, fat_goal: $("#g-fat").value };
+        api.setSettings(s).then(function () { flash("goals-flash", "Saved.", "ok"); loadDiet(); }).catch(showErr);
+      });
+      $("#key-form").addEventListener("submit", function (ev) {
+        ev.preventDefault();
+        var k = $("#api-key").value.trim(); if (!k) return;
+        api.setKey(k).then(function () { flash("key-flash", "Key saved.", "ok"); $("#api-key").value = ""; $("#key-state").textContent = "✓ key saved"; }).catch(showErr);
+      });
+      $("#summary-refresh").addEventListener("click", function () {
+        $("#daily-summary").textContent = "Generating…";
+        api.summary(todayISO(), true).then(function (s) { $("#daily-summary").innerHTML = s.summary.replace(/\n/g, "<br>"); }).catch(showErr);
       });
     });
-    applyCheckinMode("tonight");
-    $("#checkin-form").addEventListener("submit", onSubmit);
-    $("#wake-form").addEventListener("submit", onSaveWake);
 
-    // tabs + sync + diet handlers
-    document.querySelectorAll(".tabbtn").forEach(function (b) {
-      b.addEventListener("click", function () { showTab(b.getAttribute("data-tab")); });
-    });
-    window.addEventListener("hashchange", function () { showTab(currentTab()); });
-    $("#sync-btn").addEventListener("click", onSync);
-    $("#meal-form").addEventListener("submit", onMealSubmit);
-    $("#meal-photo").addEventListener("change", function () {
-      var f = this.files[0], p = $("#meal-preview");
-      if (f) { p.src = URL.createObjectURL(f); p.hidden = false; } else { p.hidden = true; }
-    });
-    $("#goals-form").addEventListener("submit", function (ev) {
-      ev.preventDefault();
-      var s = { weight_unit: $("#g-unit").value, weight_goal: $("#g-weight").value, calorie_goal: $("#g-cal").value, protein_goal: $("#g-prot").value, carb_goal: $("#g-carb").value, fat_goal: $("#g-fat").value };
-      api.setSettings(s).then(function () { flash("goals-flash", "Saved.", "ok"); loadDiet(); }).catch(showErr);
-    });
-    $("#key-form").addEventListener("submit", function (ev) {
-      ev.preventDefault();
-      var k = $("#api-key").value.trim(); if (!k) return;
-      api.setKey(k).then(function () { flash("key-flash", "Key saved.", "ok"); $("#api-key").value = ""; $("#key-state").textContent = "✓ key saved"; }).catch(showErr);
-    });
-    $("#summary-refresh").addEventListener("click", function () {
-      $("#daily-summary").textContent = "Generating…";
-      api.summary(todayISO(), true).then(function (s) { $("#daily-summary").innerHTML = s.summary.replace(/\n/g, "<br>"); }).catch(showErr);
-    });
-
-    showTab(currentTab());
     refresh();
   }
 
