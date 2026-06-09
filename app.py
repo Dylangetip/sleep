@@ -344,18 +344,13 @@ def get_diet(date: str = None):
         cout = (row.get("active_calories") or 0) + (row.get("resting_calories") or 0)
         wkg = _latest_weight_kg(entries)
         conv = (lambda kg: round(kg * KG_TO_LB, 1)) if unit == "lb" else (lambda kg: round(kg, 1))
-
-        def gnum(k):
-            v = st.get_setting(conn, k)
-            return float(v) if v not in (None, "") else None
+        targets = st.compute_targets(conn)  # app computes calorie + macro targets
         return {
             "date": d, "weight_unit": unit,
             "calories_in": cin, "calories_out": cout or None,
             "net_calories": (cin - cout) if cout else None,
             "protein_g": round(protein, 1), "carbs_g": round(carbs, 1), "fat_g": round(fat, 1),
-            "goals": {"calories": gnum("calorie_goal"), "protein": gnum("protein_goal"),
-                      "carbs": gnum("carb_goal"), "fat": gnum("fat_goal"),
-                      "weight": gnum("weight_goal")},
+            "targets": targets,
             "weight": conv(wkg) if wkg is not None else None,
             "weight_series": [{"date": e["date"], "weight": conv(e["weight_kg"])}
                               for e in entries if e.get("weight_kg") is not None],
@@ -386,6 +381,9 @@ def get_daily_summary(date: str = None, refresh: bool = False):
         if cached and not refresh:
             return {"date": d, "summary": cached["summary"],
                     "generated_at": cached["generated_at"], "cached": True}
+        if not refresh:
+            # don't spend an API call automatically — wait for an explicit refresh
+            return {"date": d, "summary": None, "generated_at": None, "cached": False}
         facts = st.day_facts_text(conn, d)
         try:
             import ai
@@ -407,8 +405,7 @@ def get_daily_summary(date: str = None, refresh: bool = False):
 # Settings
 # --------------------------------------------------------------------------- #
 
-SETTING_KEYS = ["weight_unit", "weight_goal", "calorie_goal", "protein_goal",
-                "carb_goal", "fat_goal", "meal_model"]
+SETTING_KEYS = ["weight_unit", "weight_goal", "weight_pace", "meal_model"]
 
 
 @app.get("/api/settings")
@@ -416,10 +413,12 @@ def get_settings():
     def _go(conn):
         out = {k: st.get_setting(conn, k) for k in SETTING_KEYS}
         out["weight_unit"] = out["weight_unit"] or "lb"
+        out["weight_pace"] = out["weight_pace"] or "0.5"
         out["meal_model"] = out["meal_model"] or "claude-opus-4-8"
         out["wake"] = st.get_setting(conn, "wake_time", st.DEFAULT_WAKE_TIME)
         out["anthropic_key_set"] = bool(_api_key(conn))
         out["last_synced"] = st.get_setting(conn, "last_synced")
+        out["targets"] = st.compute_targets(conn)
         return out
     return with_conn(_go)
 

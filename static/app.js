@@ -410,8 +410,7 @@
   }
 
   /* ---------------- tabs ---------------- */
-  var TABS = ["today", "diet", "activity", "body", "insights"];
-  var tabLoaded = {};
+  var TABS = ["today", "sleep", "diet", "activity", "body", "insights"];
   function showTab(name) {
     if (TABS.indexOf(name) < 0) name = "today";
     TABS.forEach(function (t) {
@@ -424,10 +423,52 @@
     loadTab(name);
   }
   function loadTab(name) {
-    if (name === "diet") loadDiet();
+    if (name === "today") loadToday();
+    else if (name === "sleep") refresh();           // re-render so charts size correctly
+    else if (name === "diet") loadDiet();
     else if (name === "activity") loadActivity();
     else if (name === "body") loadBody();
     else if (name === "insights") loadInsights();
+  }
+
+  /* ---------------- today (overview) ---------------- */
+  function loadToday() {
+    Promise.all([api.report(), api.diet(todayISO()), api.stats()]).then(function (res) {
+      renderToday(res[0], res[1], res[2]);
+    }).catch(showErr);
+    api.summary(todayISO(), false).then(function (s) {
+      $("#today-summary").innerHTML = s.summary
+        ? s.summary.replace(/\n/g, "<br>")
+        : "No summary yet — tap Refresh to generate one for today.";
+    }).catch(function () { $("#today-summary").textContent = ""; });
+  }
+  function renderToday(report, diet, stats) {
+    var bt = to12h(report.prescribed_bedtime);
+    var ln = report.last_night;
+    $("#today-hero").innerHTML = "";
+    $("#today-hero").appendChild(el("div", { class: "hero-grid" }, [
+      el("div", {}, [
+        el("div", { class: "kicker hero-kicker", text: "Tonight · target bedtime" }),
+        el("div", { class: "hero-bedtime", html: bt.time + '<span class="ampm">' + bt.ampm + "</span>" }),
+        el("div", { class: "hero-caption", text: "Your whole-health snapshot for today. Switch tabs for the detail." })
+      ]),
+      el("div", { class: "hero-side" }, [
+        el("div", { class: "hero-row" }, [el("span", { class: "lbl", text: "Last night" }), el("span", { class: "val", text: ln ? ln.efficiency + "%" : "—" })]),
+        el("div", { class: "hero-row" }, [el("span", { class: "lbl", text: "Net calories" }), el("span", { class: "val", text: diet.net_calories == null ? "—" : diet.net_calories })]),
+        el("div", { class: "hero-row" }, [el("span", { class: "lbl", text: "Weight" }), el("span", { class: "val", text: diet.weight == null ? "—" : diet.weight + " " + diet.weight_unit })])
+      ])
+    ]));
+    var row = $("#today-stats"); row.innerHTML = "";
+    row.appendChild(statTile("Last night · sleep", ln ? durHM(ln.total_sleep_min) : "—", "", ln ? ln.efficiency + "% efficiency" : "no data"));
+    row.appendChild(statTile("Calories in", diet.calories_in || 0, " kcal", diet.targets && diet.targets.calorie_target ? "target " + diet.targets.calorie_target : "set a goal"));
+    row.appendChild(statTile("Today · meals", (diet.meals || []).length, "", "logged"));
+    row.appendChild(statTile("Streak", (stats && stats.streak) || 0, "", "days logged"));
+    var g = $("#today-glance"); g.innerHTML = "";
+    function gi(txt) { g.appendChild(el("li", { class: "progress-item" }, [el("span", { class: "check", text: "•" }), el("span", { text: txt })])); }
+    if (ln) gi("Slept " + durHM(ln.total_sleep_min) + " at " + ln.efficiency + "% efficiency; resting HR " + (ln.resting_hr || "—") + ".");
+    gi("Ate " + (diet.calories_in || 0) + " kcal" + (diet.calories_out ? ", burned " + diet.calories_out + " (net " + diet.net_calories + ")." : " so far."));
+    if ((report.daily_nudges || []).length) gi(report.daily_nudges[0]);
+    if (!ln && !diet.calories_in) gi("Tap Sync to pull today's Garmin data, or log a meal under Diet.");
   }
 
   /* ---------------- sync ---------------- */
@@ -458,12 +499,20 @@
   function fillSettings(s) {
     $("#g-unit").value = s.weight_unit || "lb";
     $("#g-weight").value = s.weight_goal || "";
-    $("#g-cal").value = s.calorie_goal || "";
-    $("#g-prot").value = s.protein_goal || "";
-    $("#g-carb").value = s.carb_goal || "";
-    $("#g-fat").value = s.fat_goal || "";
+    if (s.weight_pace) $("#g-pace").value = s.weight_pace;
     $("#key-state").textContent = s.anthropic_key_set ? "✓ key saved" : "no key yet";
+    renderTargets(s.targets);
     if (s.last_synced) showSyncTime(s.last_synced);
+  }
+  function renderTargets(t) {
+    var box = $("#computed-targets"); if (!box) return;
+    if (!t || t.calorie_target == null) {
+      box.innerHTML = "<b>Targets — </b>" + ((t && t.basis) || "Set a goal and sync Garmin to compute targets.");
+      return;
+    }
+    box.innerHTML = "<b>Computed targets:</b> " + t.calorie_target + " kcal/day · "
+      + t.protein_g + "g protein · " + t.carbs_g + "g carbs · " + t.fat_g + "g fat. "
+      + '<span class="note">' + t.basis + "</span>";
   }
   function ring(label, val, goal, unit) {
     var pct = goal ? Math.min(100, Math.round((val / goal) * 100)) : null;
@@ -484,14 +533,16 @@
       ]),
       el("div", { class: "hero-side" }, [
         el("div", { class: "hero-row" }, [el("span", { class: "lbl", text: "Weight" }), el("span", { class: "val", text: d.weight == null ? "—" : d.weight + " " + d.weight_unit })]),
-        el("div", { class: "hero-row" }, [el("span", { class: "lbl", text: "Goal" }), el("span", { class: "val", text: d.goals.weight == null ? "—" : d.goals.weight + " " + d.weight_unit })])
+        el("div", { class: "hero-row" }, [el("span", { class: "lbl", text: "Goal" }), el("span", { class: "val", text: (d.targets && d.targets.weight_goal != null) ? d.targets.weight_goal + " " + d.weight_unit : "—" })])
       ])
     ]));
+    var t = d.targets || {};
     var row = $("#diet-stats"); row.innerHTML = "";
-    row.appendChild(ring("Calories", d.calories_in, d.goals.calories, " kcal"));
-    row.appendChild(ring("Protein", d.protein_g, d.goals.protein, " g"));
-    row.appendChild(ring("Carbs", d.carbs_g, d.goals.carbs, " g"));
-    row.appendChild(ring("Fat", d.fat_g, d.goals.fat, " g"));
+    row.appendChild(ring("Calories", d.calories_in, t.calorie_target, " kcal"));
+    row.appendChild(ring("Protein", d.protein_g, t.protein_g, " g"));
+    row.appendChild(ring("Carbs", d.carbs_g, t.carbs_g, " g"));
+    row.appendChild(ring("Fat", d.fat_g, t.fat_g, " g"));
+    renderTargets(t);
     renderMealGallery(d.meals);
     lineChart("chart-weight", dietCharts, (d.weight_series || []).map(function (w) { return { date: w.date, v: w.weight }; }), "Weight", COLORS.eff);
     barChart("chart-cal", dietCharts, (d.calorie_series || []).map(function (c) { return { date: c.date, v: c.calories }; }), "kcal");
@@ -530,7 +581,24 @@
 
   /* ---------------- activity ---------------- */
   function loadActivity() {
-    api.activities().then(function (acts) {
+    Promise.all([api.activities(), api.entries()]).then(function (res) {
+      var acts = res[0], entries = res[1];
+      // all-day movement tiles from the latest day that has any movement data
+      var last = null;
+      for (var i = entries.length - 1; i >= 0; i--) {
+        var e = entries[i];
+        if (e.steps != null || e.floors_climbed != null || e.active_calories != null) { last = e; break; }
+      }
+      var row = $("#movement-stats"); row.innerHTML = "";
+      function mt(label, v, unit, sub) { row.appendChild(statTile(label, v == null ? "—" : v, unit || "", sub || "")); }
+      var L = last || {};
+      mt("Steps", L.steps == null ? null : L.steps.toLocaleString(), "");
+      mt("Floors climbed", L.floors_climbed, "");
+      mt("Distance", L.daily_distance_m == null ? null : (L.daily_distance_m / 1000).toFixed(2), " km");
+      mt("Active calories", L.active_calories, " kcal");
+      mt("Intensity min", (L.intensity_moderate_min == null && L.intensity_vigorous_min == null) ? null : ((L.intensity_moderate_min || 0) + (L.intensity_vigorous_min || 0)), "", "mod+vig");
+
+      // workouts table
       var body = $("#activity-body"); body.innerHTML = "";
       $("#activity-empty").style.display = acts.length ? "none" : "";
       acts.slice().reverse().forEach(function (a) {
@@ -545,10 +613,11 @@
           el("td", { class: "num", text: a.training_load == null ? "—" : Math.round(a.training_load) })
         ]));
       });
-      var byDay = {};
-      acts.forEach(function (a) { if (a.date && a.calories) byDay[a.date] = (byDay[a.date] || 0) + a.calories; });
-      var series = Object.keys(byDay).sort().slice(-30).map(function (d) { return { date: d, v: byDay[d] }; });
-      barChart("chart-activeCal", dietCharts, series, "kcal");
+      // charts from daily entries (all-day), not just workouts
+      var steps = entries.filter(function (e) { return e.steps != null; }).slice(-30).map(function (e) { return { date: e.date, v: e.steps }; });
+      barChart("chart-steps", dietCharts, steps, "");
+      var acal = entries.filter(function (e) { return e.active_calories != null; }).slice(-30).map(function (e) { return { date: e.date, v: e.active_calories }; });
+      barChart("chart-activeCal", dietCharts, acal, "kcal");
     }).catch(showErr);
   }
 
@@ -558,11 +627,12 @@
       var entries = res[0], d = res[1];
       var latest = function (k) { for (var i = entries.length - 1; i >= 0; i--) if (entries[i][k] != null) return entries[i][k]; return null; };
       var row = $("#body-stats"); row.innerHTML = "";
-      row.appendChild(statTile("Weight", d.weight == null ? "—" : d.weight, " " + d.weight_unit, d.goals.weight ? "goal " + d.goals.weight : ""));
+      var goalW = d.targets ? d.targets.weight_goal : null;
+      row.appendChild(statTile("Weight", d.weight == null ? "—" : d.weight, " " + d.weight_unit, goalW ? "goal " + goalW : ""));
       row.appendChild(statTile("VO₂max", latest("vo2max") || "—", "", ""));
       row.appendChild(statTile("Training readiness", latest("training_readiness") || "—", "", ""));
       row.appendChild(statTile("Body fat", latest("body_fat_pct") == null ? "—" : latest("body_fat_pct"), "%", ""));
-      lineChart("chart-bodyWeight", dietCharts, (d.weight_series || []).map(function (w) { return { date: w.date, v: w.weight }; }), "Weight", COLORS.eff, d.goals.weight);
+      lineChart("chart-bodyWeight", dietCharts, (d.weight_series || []).map(function (w) { return { date: w.date, v: w.weight }; }), "Weight", COLORS.eff, goalW);
       var rr = entries.filter(function (e) { return e.training_readiness != null; }).slice(-30).map(function (e) { return { date: e.date, v: e.training_readiness }; });
       barChart("chart-readiness", dietCharts, rr, "");
     }).catch(showErr);
@@ -656,8 +726,12 @@
       });
       $("#goals-form").addEventListener("submit", function (ev) {
         ev.preventDefault();
-        var s = { weight_unit: $("#g-unit").value, weight_goal: $("#g-weight").value, calorie_goal: $("#g-cal").value, protein_goal: $("#g-prot").value, carb_goal: $("#g-carb").value, fat_goal: $("#g-fat").value };
-        api.setSettings(s).then(function () { flash("goals-flash", "Saved.", "ok"); loadDiet(); }).catch(showErr);
+        var s = { weight_unit: $("#g-unit").value, weight_goal: $("#g-weight").value, weight_pace: $("#g-pace").value };
+        api.setSettings(s).then(function () { flash("goals-flash", "Saved — targets recomputed.", "ok"); loadDiet(); }).catch(showErr);
+      });
+      $("#today-summary-refresh").addEventListener("click", function () {
+        $("#today-summary").textContent = "Generating…";
+        api.summary(todayISO(), true).then(function (s) { $("#today-summary").innerHTML = (s.summary || "").replace(/\n/g, "<br>"); }).catch(showErr);
       });
       $("#key-form").addEventListener("submit", function (ev) {
         ev.preventDefault();

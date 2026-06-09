@@ -123,6 +123,8 @@ BODY_COLUMNS = [
     ("intensity_vigorous_min", "INTEGER"),
     ("active_calories", "INTEGER"),
     ("resting_calories", "INTEGER"),
+    ("floors_climbed", "INTEGER"),
+    ("daily_distance_m", "REAL"),
 ]
 BODY_COLUMN_NAMES = [c for c, _ in BODY_COLUMNS]
 
@@ -543,6 +545,77 @@ def delete_meal(conn, meal_id):
     cur = conn.execute("DELETE FROM meals WHERE id=?", (meal_id,))
     conn.commit()
     return cur.rowcount
+
+
+KG_PER_LB = 0.45359237
+LB_PER_KG = 2.2046226218
+
+
+def compute_targets(conn):
+    """Auto-compute the calorie + macro targets from the user's Garmin TDEE
+    (active + resting calories) and their goal weight — so the user only picks a
+    target weight and pace, not the numbers. Returns a dict of computed targets."""
+    entries = all_entries(conn)
+    unit = get_setting(conn, "weight_unit", "lb")
+
+    # TDEE = average of (active + resting) Garmin calories over recent days.
+    tdees = [e["active_calories"] + e["resting_calories"] for e in entries[-21:]
+             if e.get("active_calories") is not None
+             and e.get("resting_calories") is not None]
+    tdee = round(sum(tdees) / len(tdees)) if tdees else None
+
+    wkg = next((e["weight_kg"] for e in reversed(entries)
+                if e.get("weight_kg") is not None), None)
+    cur = (round(wkg * LB_PER_KG, 1) if unit == "lb" else round(wkg, 1)) if wkg else None
+    weight_lb = round(wkg * LB_PER_KG, 1) if wkg else None
+
+    def _num(key):
+        v = get_setting(conn, key)
+        try:
+            return float(v) if v not in (None, "") else None
+        except ValueError:
+            return None
+
+    goal = _num("weight_goal")
+    pace = _num("weight_pace") or 0.5          # per week, in the display unit
+    pace_lb = pace if unit == "lb" else pace * LB_PER_KG
+
+    direction = "maintain"
+    if goal is not None and cur is not None:
+        thresh = 1.0 if unit == "lb" else 0.5
+        if cur - goal > thresh:
+            direction = "lose"
+        elif cur - goal < -thresh:
+            direction = "gain"
+
+    daily_delta = round(pace_lb * 3500 / 7)    # 3500 kcal ≈ 1 lb
+    calorie_target = None
+    if tdee is not None:
+        if direction == "lose":
+            calorie_target = max(1400, tdee - daily_delta)
+        elif direction == "gain":
+            calorie_target = tdee + daily_delta
+        else:
+            calorie_target = tdee
+
+    protein = carbs = fat = None
+    if calorie_target:
+        protein = round(0.8 * weight_lb) if weight_lb else round(0.3 * calorie_target / 4)
+        fat = round(0.27 * calorie_target / 9)
+        carbs = max(0, round((calorie_target - protein * 4 - fat * 9) / 4))
+
+    if tdee is None:
+        basis = "Sync a few days of Garmin data first (need active + resting calories)."
+    else:
+        verb = {"lose": "a deficit", "gain": "a surplus", "maintain": "maintenance"}[direction]
+        basis = (f"Based on your Garmin TDEE (~{tdee} kcal/day) and {verb} toward "
+                 f"your goal of {goal if goal is not None else '—'} {unit}.")
+    return {
+        "tdee": tdee, "calorie_target": calorie_target,
+        "protein_g": protein, "carbs_g": carbs, "fat_g": fat,
+        "direction": direction, "pace": pace, "weight_unit": unit,
+        "weight": cur, "weight_goal": goal, "basis": basis,
+    }
 
 
 def daily_features(conn):
@@ -1705,6 +1778,8 @@ def fetch_garmin_night(api, ds, wake_default=DEFAULT_WAKE_TIME):
     entry["intensity_vigorous_min"] = summary.get("vigorousIntensityMinutes")
     entry["active_calories"] = summary.get("activeKilocalories")
     entry["resting_calories"] = summary.get("bmrKilocalories")
+    entry["floors_climbed"] = summary.get("floorsAscended")
+    entry["daily_distance_m"] = summary.get("totalDistanceMeters")
 
     _fetch_body_metrics(api, ds, entry)
 

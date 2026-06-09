@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="styles.css?v=2" />
+<link rel="stylesheet" href="styles.css?v=3" />
 </head>
 <body>
 
@@ -23,6 +23,7 @@
       </div>
       <nav class="tabnav" id="tabnav">
         <button class="tabbtn tab-on" data-tab="today">Today</button>
+        <button class="tabbtn" data-tab="sleep">Sleep</button>
         <button class="tabbtn" data-tab="diet">Diet</button>
         <button class="tabbtn" data-tab="activity">Activity</button>
         <button class="tabbtn" data-tab="body">Body</button>
@@ -37,8 +38,28 @@
 
   <main class="wrap">
 
-   <!-- ================= TODAY (sleep) ================= -->
+   <!-- ================= TODAY (overview) ================= -->
    <div id="tab-today" class="tab">
+    <section class="section"><div id="today-hero" class="hero"></div></section>
+    <section class="section"><div id="today-stats" class="stat-row"></div></section>
+    <section class="section">
+      <div class="grid cols-2">
+        <div class="card card-pad">
+          <div class="section-head" style="margin-bottom:6px"><h2 style="font-size:20px">Today at a glance</h2></div>
+          <ul id="today-glance" class="progress-list"></ul>
+        </div>
+        <div class="card card-pad">
+          <div class="section-head" style="margin-bottom:6px"><h2 style="font-size:20px">AI daily summary</h2>
+            <button id="today-summary-refresh" class="btn btn-ghost" style="font-size:12px;padding:7px 12px">Refresh</button></div>
+          <p class="panel-sub">Claude ties together your sleep, activity and diet.</p>
+          <div id="today-summary" class="adherence" style="margin-top:6px"></div>
+        </div>
+      </div>
+    </section>
+   </div><!-- /tab-today -->
+
+   <!-- ================= SLEEP ================= -->
+   <div id="tab-sleep" class="tab" hidden>
 
     <!-- ===== HERO: tonight's plan ===== -->
     <section class="section">
@@ -220,7 +241,7 @@
       </div>
     </section>
 
-   </div><!-- /tab-today -->
+   </div><!-- /tab-sleep -->
 
    <!-- ================= DIET ================= -->
    <div id="tab-diet" class="tab" hidden>
@@ -265,18 +286,21 @@
         <!-- right: goals + key -->
         <div class="grid" style="align-content:start">
           <div class="card card-pad">
-            <h3 class="panel-title">Goals</h3>
-            <p class="panel-sub">Daily targets and your weight goal.</p>
+            <h3 class="panel-title">Your goal</h3>
+            <p class="panel-sub">Set a target weight and pace &mdash; the app computes your calorie &amp; macro targets from your Garmin TDEE. No guessing numbers.</p>
             <form id="goals-form" class="form-grid">
-              <div class="field"><label>Weight unit</label>
+              <div class="field"><label>Units</label>
                 <select id="g-unit" name="weight_unit"><option>lb</option><option>kg</option></select></div>
-              <div class="field"><label>Weight goal</label><input type="number" id="g-weight" name="weight_goal" step="0.1" /></div>
-              <div class="field"><label>Calories/day</label><input type="number" id="g-cal" name="calorie_goal" step="10" /></div>
-              <div class="field"><label>Protein g</label><input type="number" id="g-prot" name="protein_goal" step="5" /></div>
-              <div class="field"><label>Carbs g</label><input type="number" id="g-carb" name="carb_goal" step="5" /></div>
-              <div class="field"><label>Fat g</label><input type="number" id="g-fat" name="fat_goal" step="5" /></div>
-              <div class="field full"><div class="btn-row"><button type="submit" class="btn btn-ghost">Save goals</button><span id="goals-flash" class="form-flash"></span></div></div>
+              <div class="field"><label>Goal weight</label><input type="number" id="g-weight" name="weight_goal" step="0.1" placeholder="e.g. 175" /></div>
+              <div class="field full"><label>Pace <span class="opt">(per week)</span></label>
+                <select id="g-pace" name="weight_pace">
+                  <option value="0.25">0.25 / week (gentle)</option>
+                  <option value="0.5" selected>0.5 / week (standard)</option>
+                  <option value="1">1.0 / week (aggressive)</option>
+                </select></div>
+              <div class="field full"><div class="btn-row"><button type="submit" class="btn btn-ghost">Save goal</button><span id="goals-flash" class="form-flash"></span></div></div>
             </form>
+            <div id="computed-targets" class="adherence" style="margin-top:6px"></div>
           </div>
           <div class="card card-pad">
             <h3 class="panel-title">Claude API key</h3>
@@ -306,16 +330,24 @@
 
    <!-- ================= ACTIVITY ================= -->
    <div id="tab-activity" class="tab" hidden>
-    <section class="section"><div class="section-head"><h2>Activities</h2><span class="note">From Garmin</span></div>
+    <section class="section"><div class="section-head"><h2>Today&rsquo;s movement</h2><span class="note">All-day, from Garmin</span></div>
+      <div id="movement-stats" class="stat-row"></div>
+    </section>
+    <section class="section">
+      <div class="grid cols-12">
+        <div class="card chart-card"><div class="chart-head"><h3>Steps (per day)</h3></div><div class="chart-box"><canvas id="chart-steps"></canvas></div></div>
+        <div class="card chart-card"><div class="chart-head"><h3>Active calories (per day)</h3></div><div class="chart-box"><canvas id="chart-activeCal"></canvas></div></div>
+      </div>
+    </section>
+    <section class="section"><div class="section-head"><h2>Workouts</h2><span class="note">Logged activities</span></div>
       <div class="card table-card"><div class="table-scroll">
         <table class="history"><thead><tr>
           <th>Date</th><th>Type</th><th>Name</th><th class="num">Duration</th>
           <th class="num">Distance</th><th class="num">Calories</th><th class="num">Avg HR</th><th class="num">Load</th>
         </tr></thead><tbody id="activity-body"></tbody></table></div>
-        <div id="activity-empty" class="empty" style="display:none">No activities synced yet.</div>
+        <div id="activity-empty" class="empty" style="display:none">No workouts synced yet — all-day movement still shows above.</div>
       </div>
     </section>
-    <section class="section"><div class="card chart-card"><div class="chart-head"><h3>Active calories (per day)</h3></div><div class="chart-box"><canvas id="chart-activeCal"></canvas></div></div></section>
    </div><!-- /tab-activity -->
 
    <!-- ================= BODY ================= -->
@@ -368,6 +400,6 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 
   <!-- frontend app — talks to the real FastAPI backend over /api/* -->
-  <script src="app.js?v=2"></script>
+  <script src="app.js?v=3"></script>
 </body>
 </html>
