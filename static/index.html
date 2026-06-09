@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="styles.css?v=3" />
+<link rel="stylesheet" href="styles.css?v=4" />
 </head>
 <body>
 
@@ -261,7 +261,17 @@
             <div class="form-grid">
               <div class="field full">
                 <label for="meal-photo">Photo</label>
-                <input type="file" id="meal-photo" name="photo" accept="image/*" />
+                <div class="btn-row" style="margin-top:0">
+                  <button type="button" id="cam-open" class="btn btn-ghost">📷 Take photo</button>
+                  <input type="file" id="meal-photo" name="photo" accept="image/*" capture="environment" />
+                </div>
+                <div id="cam-wrap" hidden>
+                  <video id="cam-video" class="cam-video" autoplay playsinline muted></video>
+                  <div class="btn-row">
+                    <button type="button" id="cam-snap" class="btn btn-primary">Snap</button>
+                    <button type="button" id="cam-cancel" class="btn btn-ghost">Cancel</button>
+                  </div>
+                </div>
                 <img id="meal-preview" class="meal-preview" alt="" hidden />
               </div>
               <div class="field">
@@ -400,6 +410,6 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 
   <!-- frontend app — talks to the real FastAPI backend over /api/* -->
-  <script src="app.js?v=3"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>

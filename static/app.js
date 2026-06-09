@@ -413,6 +413,7 @@
   var TABS = ["today", "sleep", "diet", "activity", "body", "insights"];
   function showTab(name) {
     if (TABS.indexOf(name) < 0) name = "today";
+    if (name !== "diet" && typeof closeCam === "function") closeCam();  // release webcam
     TABS.forEach(function (t) {
       var sec = $("#tab-" + t); if (sec) sec.hidden = (t !== name);
     });
@@ -566,17 +567,58 @@
   function onMealSubmit(ev) {
     ev.preventDefault();
     var fd = new FormData();
-    var file = $("#meal-photo").files[0];
-    if (file) fd.append("photo", file);
+    var file = $("#meal-photo").files[0] || camBlob;
+    if (file) fd.append("photo", file, file.name || "camera.jpg");
     fd.append("date", $("#meal-date").value || todayISO());
     if ($("#meal-time").value) fd.append("time", $("#meal-time").value);
     fd.append("notes", $("#meal-notes").value || "");
     flash("meal-flash", file ? "Analyzing photo…" : "Saving…", "ok");
     api.uploadMeal(fd).then(function () {
       flash("meal-flash", "Saved.", "ok");
-      ev.target.reset(); $("#meal-preview").hidden = true; $("#meal-date").value = todayISO();
+      ev.target.reset(); camBlob = null;
+      $("#meal-preview").hidden = true; $("#meal-date").value = todayISO();
       loadDiet();
     }).catch(function (e) { flash("meal-flash", "Failed: " + (e.message || e), "err"); });
+  }
+
+  /* ---------------- camera capture ---------------- */
+  var camStream = null, camBlob = null;
+  function openCam() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      // no webcam API — fall back to the file input (which opens the camera on phones)
+      $("#meal-photo").click();
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "environment", width: { ideal: 1920 } }, audio: false
+    }).then(function (stream) {
+      camStream = stream;
+      $("#cam-video").srcObject = stream;
+      $("#cam-wrap").hidden = false;
+      $("#meal-preview").hidden = true;
+    }).catch(function () {
+      flash("meal-flash", "Camera unavailable or permission denied — use the file picker.", "err");
+      $("#meal-photo").click();
+    });
+  }
+  function closeCam() {
+    if (camStream) { camStream.getTracks().forEach(function (t) { t.stop(); }); camStream = null; }
+    var w = $("#cam-wrap"); if (w) w.hidden = true;
+  }
+  function snapCam() {
+    var v = $("#cam-video");
+    if (!v.videoWidth) return;
+    var cv = document.createElement("canvas");
+    cv.width = v.videoWidth; cv.height = v.videoHeight;
+    cv.getContext("2d").drawImage(v, 0, 0);
+    cv.toBlob(function (b) {
+      camBlob = b;
+      $("#meal-photo").value = "";          // camera shot wins over any picked file
+      var p = $("#meal-preview");
+      p.src = URL.createObjectURL(b); p.hidden = false;
+      closeCam();
+      flash("meal-flash", "Photo captured — add notes and hit Analyze.", "ok");
+    }, "image/jpeg", 0.9);
   }
 
   /* ---------------- activity ---------------- */
@@ -722,8 +764,12 @@
       $("#meal-form").addEventListener("submit", onMealSubmit);
       $("#meal-photo").addEventListener("change", function () {
         var f = this.files[0], p = $("#meal-preview");
+        camBlob = null;                      // picked file wins over an old snap
         if (f) { p.src = URL.createObjectURL(f); p.hidden = false; } else { p.hidden = true; }
       });
+      $("#cam-open").addEventListener("click", openCam);
+      $("#cam-snap").addEventListener("click", snapCam);
+      $("#cam-cancel").addEventListener("click", closeCam);
       $("#goals-form").addEventListener("submit", function (ev) {
         ev.preventDefault();
         var s = { weight_unit: $("#g-unit").value, weight_goal: $("#g-weight").value, weight_pace: $("#g-pace").value };
