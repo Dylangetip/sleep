@@ -2062,24 +2062,13 @@ def build_launchd_plist(hour, every_hours=3):
     return plist
 
 
-def cmd_install_daily_sync(conn, args):
-    """Install a macOS LaunchAgent that runs `sync-recent` every morning."""
+def _install_launch_agent(plist, plist_path):
+    """Write a LaunchAgent plist and (re)load it — shared by sync + reminders."""
     import plistlib
     import subprocess
-    if sys.platform != "darwin":
-        print("Auto-sync install is macOS-only. On Linux, add a cron/systemd "
-              "timer that runs:  python sleep_tracker.py sync-recent --days 3")
-        return
-    if not (os.path.isdir(GARMIN_TOKEN_DIR) and os.listdir(GARMIN_TOKEN_DIR)):
-        print("Run `garmin-login` first — the background job can't do 2FA, so it "
-              "needs a stored token.")
-        return
-
-    plist_path = _launchd_plist_path()
     os.makedirs(os.path.dirname(plist_path), exist_ok=True)
     with open(plist_path, "wb") as fh:
-        plistlib.dump(build_launchd_plist(args.hour, args.every_hours), fh)
-
+        plistlib.dump(plist, fh)
     # Reload (try modern bootstrap, fall back to legacy load).
     uid = os.getuid()
     subprocess.run(["launchctl", "bootout", f"gui/{uid}", plist_path],
@@ -2090,6 +2079,32 @@ def cmd_install_daily_sync(conn, args):
         subprocess.run(["launchctl", "unload", plist_path], capture_output=True)
         subprocess.run(["launchctl", "load", "-w", plist_path], capture_output=True)
 
+
+def _remove_launch_agent(plist_path):
+    import subprocess
+    uid = os.getuid()
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}", plist_path],
+                   capture_output=True)
+    subprocess.run(["launchctl", "unload", plist_path], capture_output=True)
+    if os.path.exists(plist_path):
+        os.remove(plist_path)
+        return True
+    return False
+
+
+def cmd_install_daily_sync(conn, args):
+    """Install a macOS LaunchAgent that runs `sync-recent` every morning."""
+    if sys.platform != "darwin":
+        print("Auto-sync install is macOS-only. On Linux, add a cron/systemd "
+              "timer that runs:  python sleep_tracker.py sync-recent --days 3")
+        return
+    if not (os.path.isdir(GARMIN_TOKEN_DIR) and os.listdir(GARMIN_TOKEN_DIR)):
+        print("Run `garmin-login` first — the background job can't do 2FA, so it "
+              "needs a stored token.")
+        return
+
+    plist_path = _launchd_plist_path()
+    _install_launch_agent(build_launchd_plist(args.hour, args.every_hours), plist_path)
     print(f"Installed daily Garmin sync at {args.hour:02d}:00.")
     print(f"  Plist: {plist_path}")
     print(f"  Log:   {DAILY_SYNC_LOG}")
@@ -2101,17 +2116,128 @@ def cmd_install_daily_sync(conn, args):
 
 def cmd_uninstall_daily_sync(conn, args):
     """Remove the macOS daily-sync LaunchAgent."""
-    import subprocess
-    plist_path = _launchd_plist_path()
-    uid = os.getuid()
-    subprocess.run(["launchctl", "bootout", f"gui/{uid}", plist_path],
-                   capture_output=True)
-    subprocess.run(["launchctl", "unload", plist_path], capture_output=True)
-    if os.path.exists(plist_path):
-        os.remove(plist_path)
-        print(f"Removed daily sync ({plist_path}).")
+    if _remove_launch_agent(_launchd_plist_path()):
+        print("Removed daily sync.")
     else:
         print("Daily sync was not installed.")
+
+
+# --------------------------------------------------------------------------- #
+# Reminders — wind-down before prescribed bedtime + evening check-in nudge
+# --------------------------------------------------------------------------- #
+
+REMINDERS_LABEL = "com.sleeptracker.reminders"
+
+
+def _reminders_plist_path():
+    return os.path.expanduser(f"~/Library/LaunchAgents/{REMINDERS_LABEL}.plist")
+
+
+def build_reminders_plist(interval_sec=600):
+    """LaunchAgent that polls `remind` every 10 min (pure, testable)."""
+    return {
+        "Label": REMINDERS_LABEL,
+        "ProgramArguments": [sys.executable, os.path.abspath(__file__), "remind"],
+        "EnvironmentVariables": {"SLEEP_DB": DEFAULT_DB},
+        "StartInterval": int(interval_sec),
+        "RunAtLoad": False,
+        "StandardOutPath": DAILY_SYNC_LOG,
+        "StandardErrorPath": DAILY_SYNC_LOG,
+    }
+
+
+def _bedtime_dt_for(now, bed_time, wake_time):
+    """The next occurrence of tonight's prescribed bedtime as a datetime.
+    A bedtime 'after midnight' (clock time earlier than the wake time) belongs
+    to tomorrow's calendar date."""
+    bed_dt = datetime.combine(now.date(), bed_time)
+    if bed_time < wake_time:          # past-midnight bedtime -> tomorrow
+        bed_dt += timedelta(days=1)
+    return bed_dt
+
+
+def due_reminders(conn, now=None):
+    """Which reminders should fire right now? Returns [(kind, title, message)].
+    Pure decision logic — the caller marks reminder_last_* and notifies."""
+    now = now or datetime.now()
+    today = now.date().isoformat()
+    out = []
+
+    entries = all_entries(conn)
+    wake = parse_time(get_setting(conn, "wake_time", DEFAULT_WAKE_TIME))
+    window = prescribed_window_min(entries)
+    bed = prescribed_bedtime(window, wake)
+    bed_dt = _bedtime_dt_for(now, bed, wake)
+
+    # Wind-down: a 15-minute window starting winddown_min before bedtime, once/day.
+    winddown_min = int(get_setting(conn, "reminder_winddown_min", 45))
+    start = bed_dt - timedelta(minutes=winddown_min)
+    if (start <= now < start + timedelta(minutes=15)
+            and get_setting(conn, "reminder_last_winddown") != today):
+        bt12 = datetime.combine(date(2000, 1, 1), bed).strftime("%-I:%M %p")
+        out.append(("winddown", "Wind-down time",
+                    f"Bedtime is {bt12}. Screens off, lights low."))
+
+    # Check-in nudge: evening, before bedtime, if tonight's check-in is empty.
+    checkin_hour = int(get_setting(conn, "reminder_checkin_hour", 21))
+    if (now.hour >= checkin_hour and now < bed_dt
+            and get_setting(conn, "reminder_last_checkin") != today):
+        offset = int(get_setting(conn, "garmin_date_offset", 1))
+        target = (now.date() + timedelta(days=offset)).isoformat()
+        row = next((e for e in entries if e["date"] == target), None)
+        done = row and any(row.get(k) is not None
+                           for k in ("rested", "mood", "caffeine_mg",
+                                     "daytime_sleepiness"))
+        if not done:
+            out.append(("checkin", "Tonight's check-in",
+                        "2-minute check-in: caffeine, naps, how you felt today."))
+    return out
+
+
+def _notify_mac(title, message):
+    import subprocess
+    script = ('display notification "{}" with title "{}"'
+              .format(message.replace('"', "'"), title.replace('"', "'")))
+    subprocess.run(["osascript", "-e", script], capture_output=True)
+
+
+def cmd_remind(conn, args):
+    """Fire any due reminders (run by the reminders LaunchAgent every 10 min)."""
+    fired = due_reminders(conn)
+    today = date.today().isoformat()
+    for kind, title, message in fired:
+        set_setting(conn, f"reminder_last_{kind}", today)
+        if sys.platform == "darwin":
+            _notify_mac(title, message)
+        print(f"{datetime.now().isoformat(timespec='seconds')}  reminder "
+              f"[{kind}]: {message}")
+    if not fired:
+        return
+
+
+def cmd_install_reminders(conn, args):
+    """Install macOS reminders: wind-down before bedtime + evening check-in nudge."""
+    if sys.platform != "darwin":
+        print("Reminders install is macOS-only. On Linux, run "
+              "`python sleep_tracker.py remind` from cron every 10 minutes.")
+        return
+    set_setting(conn, "reminder_winddown_min", args.winddown_min)
+    set_setting(conn, "reminder_checkin_hour", args.checkin_hour)
+    _install_launch_agent(build_reminders_plist(), _reminders_plist_path())
+    print(f"Installed reminders: wind-down {args.winddown_min} min before your "
+          f"prescribed bedtime, check-in nudge after {args.checkin_hour:02d}:00.")
+    print(f"  Plist: {_reminders_plist_path()}")
+    print("If notifications don't appear, allow them for Script Editor/osascript "
+          "in System Settings -> Notifications.")
+    _notify_mac("Rested", "Reminders are set up — this is what they'll look like.")
+
+
+def cmd_uninstall_reminders(conn, args):
+    """Remove the reminders LaunchAgent."""
+    if _remove_launch_agent(_reminders_plist_path()):
+        print("Removed reminders.")
+    else:
+        print("Reminders were not installed.")
 
 
 # --------------------------------------------------------------------------- #
@@ -2199,6 +2325,20 @@ def build_parser():
     pud = sub.add_parser("uninstall-daily-sync",
                          help="remove the automatic daily Garmin sync")
     pud.set_defaults(func=cmd_uninstall_daily_sync)
+
+    prm = sub.add_parser("remind", help="fire any due reminders (used by launchd)")
+    prm.set_defaults(func=cmd_remind)
+
+    pir = sub.add_parser("install-reminders",
+                         help="macOS: wind-down + check-in notification reminders")
+    pir.add_argument("--winddown-min", type=int, default=45, dest="winddown_min",
+                     help="minutes before prescribed bedtime to nudge (default 45)")
+    pir.add_argument("--checkin-hour", type=int, default=21, dest="checkin_hour",
+                     help="hour after which to nudge the check-in (default 21)")
+    pir.set_defaults(func=cmd_install_reminders)
+
+    pur = sub.add_parser("uninstall-reminders", help="remove the reminders")
+    pur.set_defaults(func=cmd_uninstall_reminders)
 
     return p
 

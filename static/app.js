@@ -802,6 +802,9 @@
       showTab(currentTab());
     });
     _try(function () { $("#sync-btn").addEventListener("click", onSync); });
+    _try(function () {
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");
+    });
 
     // sleep check-in
     _try(function () {

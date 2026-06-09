@@ -83,6 +83,33 @@ Your database now lives in a stable per-user location
 re-downloading or moving the app folder never touches your data. Override with
 the `SLEEP_DB` environment variable.
 
+### Use it from your phone
+
+`run.command` serves the app on your home WiFi and prints the phone URL
+(e.g. `http://192.168.1.23:8000`). Open it in the phone browser and use
+**Add to Home Screen** — it installs like an app (own icon, full-screen).
+Notes:
+
+- The Mac must be on and on the same WiFi (the launcher keeps it running).
+- The first launch may show a macOS firewall prompt — click **Allow**.
+- Anyone on your home network can reach the app; fine for home use, but don't
+  do this on public WiFi.
+- On the phone, the meal photo field opens the camera app directly.
+
+### Bedtime + check-in reminders (macOS notifications)
+
+```bash
+python3 sleep_tracker.py install-reminders                 # defaults below
+python3 sleep_tracker.py install-reminders --winddown-min 45 --checkin-hour 21
+python3 sleep_tracker.py uninstall-reminders
+```
+
+A background job checks every 10 minutes and sends a macOS notification:
+a **wind-down** nudge 45 min before your prescribed bedtime, and a **check-in**
+nudge after 21:00 if tonight's check-in is still empty. Each fires at most once
+per day. If notifications don't appear, allow them for Script Editor/osascript
+under System Settings → Notifications.
+
 ### API
 
 | Method | Route | Returns |

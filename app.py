@@ -475,7 +475,7 @@ async def _no_stale_assets(request, call_next):
     app.js / styles.css / index.html instead of serving a stale cached copy."""
     resp = await call_next(request)
     p = request.url.path
-    if p == "/" or p.endswith((".js", ".css", ".html")):
+    if p == "/" or p.endswith((".js", ".css", ".html", ".json")):
         resp.headers["Cache-Control"] = "no-cache"
     return resp
 

@@ -564,5 +564,71 @@ class TestMealAI(unittest.TestCase):
         self.assertIn("chicken", out["ai_items_json"])
 
 
+class TestReminders(unittest.TestCase):
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.conn = st.connect(self.path)
+        st.init_db(self.conn)
+        # 7 scored nights at ~88%: window = avg sleep + 30
+        for i in range(7):
+            st.upsert_entry(self.conn, {
+                "date": f"2026-06-0{i+1}", "bedtime": "23:30", "wake_time": "07:30",
+                "total_sleep_min": 420, "restless_moments": 5})
+        st.set_setting(self.conn, "wake_time", "07:30")
+        # window = 450 -> prescribed bedtime 23:59 (before midnight)
+
+    def tearDown(self):
+        self.conn.close()
+        os.remove(self.path)
+
+    def test_winddown_fires_inside_window_once(self):
+        from datetime import datetime
+        bed = st.prescribed_bedtime(
+            st.prescribed_window_min(st.all_entries(self.conn)),
+            st.parse_time("07:30"))
+        bed_dt = st._bedtime_dt_for(datetime(2026, 6, 8, 12, 0), bed,
+                                    st.parse_time("07:30"))
+        inside = bed_dt - __import__("datetime").timedelta(minutes=40)
+        due = st.due_reminders(self.conn, inside)
+        self.assertTrue(any(k == "winddown" for k, _, _ in due))
+        # marking it fired suppresses a second one the same day
+        st.set_setting(self.conn, "reminder_last_winddown",
+                       inside.date().isoformat())
+        due2 = st.due_reminders(self.conn, inside)
+        self.assertFalse(any(k == "winddown" for k, _, _ in due2))
+
+    def test_winddown_not_outside_window(self):
+        from datetime import datetime
+        early = datetime(2026, 6, 8, 18, 0)   # hours before bedtime
+        due = st.due_reminders(self.conn, early)
+        self.assertFalse(any(k == "winddown" for k, _, _ in due))
+
+    def test_checkin_fires_when_empty_and_not_after_checkin(self):
+        from datetime import datetime
+        evening = datetime(2026, 6, 8, 21, 30)
+        due = st.due_reminders(self.conn, evening)
+        self.assertTrue(any(k == "checkin" for k, _, _ in due))
+        # doing tonight's check-in (today + offset 1 => 2026-06-09) suppresses it
+        st.upsert_entry(self.conn, {"date": "2026-06-09", "rested": 4})
+        due2 = st.due_reminders(self.conn, evening)
+        self.assertFalse(any(k == "checkin" for k, _, _ in due2))
+
+    def test_bedtime_past_midnight_rolls_to_tomorrow(self):
+        from datetime import datetime, time as _t
+        wake = st.parse_time("08:00")
+        bd = st._bedtime_dt_for(datetime(2026, 6, 8, 23, 0), _t(0, 30), wake)
+        self.assertEqual(bd.day, 9)   # 00:30 belongs to tomorrow
+        bd2 = st._bedtime_dt_for(datetime(2026, 6, 8, 23, 0), _t(23, 30), wake)
+        self.assertEqual(bd2.day, 8)
+
+    def test_reminders_plist(self):
+        p = st.build_reminders_plist()
+        self.assertEqual(p["Label"], "com.sleeptracker.reminders")
+        self.assertIn("remind", p["ProgramArguments"])
+        self.assertEqual(p["StartInterval"], 600)
+        self.assertIn("SLEEP_DB", p["EnvironmentVariables"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -387,10 +387,26 @@ table.history td.date { font-weight: 600; color: var(--ink); }
   .stat-row { grid-template-columns: repeat(2, 1fr); }
   .hero-bedtime { font-size: 60px; }
 }
+@media (max-width: 700px) {
+  /* topbar wraps to two rows: brand + sync, then a swipeable tab strip */
+  .topbar-inner { flex-wrap: wrap; height: auto; padding: 8px 0; row-gap: 2px; }
+  .brand-sub, #streak-pill { display: none; }
+  .sync-status { max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
+  .tabnav {
+    order: 10; flex-basis: 100%; margin-left: 0;
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
+    scrollbar-width: none; flex-wrap: nowrap;
+  }
+  .tabnav::-webkit-scrollbar { display: none; }
+  .tabbtn { padding: 10px 14px; white-space: nowrap; flex: none; }
+}
 @media (max-width: 560px) {
   .wrap { padding: 0 16px; }
   .stat-row { grid-template-columns: 1fr 1fr; }
   .form-grid { grid-template-columns: 1fr; }
   .hero { padding: 24px 20px; }
+  .hero-bedtime { font-size: 48px; }
   .guardrail-inner { padding: 10px 16px; }
+  .meal-gallery { grid-template-columns: 1fr; }
+  main { padding-top: 18px; }
 }
