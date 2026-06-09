@@ -329,6 +329,24 @@ def _latest_weight_kg(entries):
     return None
 
 
+@app.post("/api/weight")
+async def post_weight(request: Request):
+    """Hand-enter a weigh-in (for users without a Garmin scale). Stored on that
+    date's entry in kilograms; merges with any synced sleep."""
+    body = await request.json()
+    d = (body.get("date") or "").strip()
+    w = _to_float(body.get("weight"))
+    if not d or w is None:
+        raise HTTPException(400, "date and weight are required")
+
+    def _go(conn):
+        unit = body.get("unit") or st.get_setting(conn, "weight_unit", "lb")
+        kg = round(w * st.KG_PER_LB, 2) if unit == "lb" else round(w, 2)
+        st.upsert_entry(conn, {"date": d, "weight_kg": kg})
+        return {"date": d, "weight_kg": kg}
+    return with_conn(_go)
+
+
 @app.get("/api/diet")
 def get_diet(date: str = None):
     def _go(conn):

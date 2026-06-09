@@ -23,6 +23,7 @@
     diet: function (d) { return get("/api/diet" + (d ? "?date=" + d : "")); },
     meals: function (d) { return get("/api/meals" + (d ? "?date=" + d : "")); },
     delMeal: function (id) { return send("DELETE", "/api/meals/" + id); },
+    logWeight: function (w) { return send("POST", "/api/weight", w); },
     activities: function () { return get("/api/activities"); },
     insights: function () { return get("/api/insights"); },
     summary: function (d, refresh) { return get("/api/summary/daily?date=" + d + (refresh ? "&refresh=true" : "")); },
@@ -499,6 +500,7 @@
   function loadDiet() {
     var today = todayISO();
     if (!$("#meal-date").value) $("#meal-date").value = today;
+    if (!$("#w-date").value) $("#w-date").value = today;
     Promise.all([api.diet(today), api.meals()]).then(function (res) {
       renderDiet(res[0], res[1]);
     }).catch(showErr);
@@ -521,6 +523,7 @@
   }
   function fillSettings(s) {
     $("#g-unit").value = s.weight_unit || "lb";
+    var ul = $("#w-unit-label"); if (ul) ul.textContent = "(" + (s.weight_unit || "lb") + ")";
     $("#g-weight").value = s.weight_goal || "";
     if (s.weight_pace) $("#g-pace").value = s.weight_pace;
     $("#key-state").textContent = s.anthropic_key_set ? "✓ key saved" : "no key yet";
@@ -835,6 +838,16 @@
         ev.preventDefault();
         var s = { weight_unit: $("#g-unit").value, weight_goal: $("#g-weight").value, weight_pace: $("#g-pace").value };
         api.setSettings(s).then(function () { flash("goals-flash", "Saved — targets recomputed.", "ok"); loadDiet(); }).catch(showErr);
+      });
+      $("#weight-form").addEventListener("submit", function (ev) {
+        ev.preventDefault();
+        var w = $("#w-val").value;
+        if (w === "") return;
+        api.logWeight({ date: $("#w-date").value || todayISO(), weight: w }).then(function () {
+          flash("weight-flash", "Saved.", "ok");
+          $("#w-val").value = "";
+          loadDiet();
+        }).catch(function (e) { flash("weight-flash", "Failed: " + (e.message || e), "err"); });
       });
       $("#today-summary-refresh").addEventListener("click", function () {
         $("#today-summary").textContent = "Generating…";
