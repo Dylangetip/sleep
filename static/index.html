@@ -15,7 +15,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="styles.css?v=7" />
+<link rel="stylesheet" href="styles.css?v=8" />
 </head>
 <body>
 
@@ -266,13 +266,13 @@
         <div class="card card-pad">
           <div class="section-head" style="margin-bottom:6px">
             <h2 style="font-size:20px">Log a meal</h2>
-            <span class="note">Photo → Claude estimates the macros</span>
+            <span class="note">Claude estimates the macros</span>
           </div>
-          <p class="panel-sub" style="margin-bottom:14px">Snap your plate; add a note for anything the photo can&rsquo;t show (e.g. &ldquo;cooked in 2 tbsp oil&rdquo;).</p>
+          <p class="panel-sub" style="margin-bottom:14px">Snap a photo <b>or</b> just describe the meal in the box below &mdash; either works. A photo is optional.</p>
           <form id="meal-form" autocomplete="off">
             <div class="form-grid">
               <div class="field full">
-                <label for="meal-photo">Photo</label>
+                <label for="meal-photo">Photo <span class="opt">(optional)</span></label>
                 <div class="btn-row" style="margin-top:0">
                   <button type="button" id="cam-open" class="btn btn-ghost">📷 Take photo</button>
                   <input type="file" id="meal-photo" name="photo" accept="image/*" capture="environment" />
@@ -295,8 +295,8 @@
                 <input type="time" id="meal-time" name="time" />
               </div>
               <div class="field full">
-                <label for="meal-notes">What&rsquo;s on the plate <span class="opt">(optional)</span></label>
-                <textarea id="meal-notes" name="notes" placeholder="e.g. grilled chicken, rice, side salad, olive oil"></textarea>
+                <label for="meal-notes">Describe the meal <span class="opt">(or notes for the photo)</span></label>
+                <textarea id="meal-notes" name="notes" placeholder="e.g. grilled chicken breast, 1 cup rice, side salad, 1 tbsp olive oil"></textarea>
               </div>
             </div>
             <div class="btn-row">
@@ -416,6 +416,15 @@
 
   </main>
 
+  <!-- ===== AI loading overlay ===== -->
+  <div id="ai-overlay" class="ai-overlay" hidden>
+    <div class="ai-overlay-card">
+      <div class="spinner" aria-hidden="true"></div>
+      <div id="ai-overlay-msg" class="ai-overlay-msg">Asking Claude…</div>
+      <div class="ai-overlay-sub">Claude is thinking — this usually takes a few seconds.</div>
+    </div>
+  </div>
+
   <!-- ===== persistent guardrail ===== -->
   <footer class="guardrail">
     <div class="guardrail-inner">
@@ -431,6 +440,6 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 
   <!-- frontend app — talks to the real FastAPI backend over /api/* -->
-  <script src="app.js?v=7"></script>
+  <script src="app.js?v=8"></script>
 </body>
 </html>

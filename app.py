@@ -265,11 +265,15 @@ async def post_meal(photo: UploadFile = File(None), date: str = Form(...),
             "notes": (notes or None), "status": "pending",
             "created_at": datetime.now().isoformat(timespec="seconds"),
         })
-        if abs_path:
+        if abs_path or (notes or "").strip():
             try:
                 import ai
-                result = ai.analyze_meal_photo(
-                    abs_path, notes or "", _meal_model(conn), _api_key(conn))
+                if abs_path:
+                    result = ai.analyze_meal_photo(
+                        abs_path, notes or "", _meal_model(conn), _api_key(conn))
+                else:
+                    result = ai.analyze_meal_text(
+                        notes, _meal_model(conn), _api_key(conn))
                 result["status"] = "analyzed"
                 result["analyzed_at"] = datetime.now().isoformat(timespec="seconds")
                 st.update_meal(conn, meal_id, result)
@@ -289,13 +293,17 @@ def reanalyze_meal(meal_id: int):
         m = st.get_meal(conn, meal_id)
         if not m:
             raise HTTPException(404, "meal not found")
-        if not m.get("photo_path"):
-            raise HTTPException(400, "meal has no photo to analyze")
-        abs_path = os.path.join(MEALS_DIR, m["photo_path"])
+        if not m.get("photo_path") and not (m.get("notes") or "").strip():
+            raise HTTPException(400, "meal has no photo or description to analyze")
         try:
             import ai
-            result = ai.analyze_meal_photo(
-                abs_path, m.get("notes") or "", _meal_model(conn), _api_key(conn))
+            if m.get("photo_path"):
+                result = ai.analyze_meal_photo(
+                    os.path.join(MEALS_DIR, m["photo_path"]),
+                    m.get("notes") or "", _meal_model(conn), _api_key(conn))
+            else:
+                result = ai.analyze_meal_text(
+                    m.get("notes"), _meal_model(conn), _api_key(conn))
             result["status"] = "analyzed"
             result["analyzed_at"] = datetime.now().isoformat(timespec="seconds")
             st.update_meal(conn, meal_id, result)

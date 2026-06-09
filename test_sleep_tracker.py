@@ -563,6 +563,35 @@ class TestMealAI(unittest.TestCase):
         self.assertEqual(out["protein_g"], 35.0)
         self.assertIn("chicken", out["ai_items_json"])
 
+    def test_analyze_meal_text_with_fake_client(self):
+        import ai
+
+        class _Parsed:
+            calories, protein_g, carbs_g, fat_g = 480, 32.0, 55.0, 14.0
+            description = "Chicken burrito bowl"
+            items = ["chicken", "rice", "beans"]
+
+        class _Resp:
+            parsed_output = _Parsed()
+
+        class _Msgs:
+            def parse(self, **kw):
+                # text-only: the single content string carries the description
+                assert "burrito" in kw["messages"][0]["content"]
+                return _Resp()
+
+        class _FakeClient:
+            messages = _Msgs()
+
+        orig = ai._client
+        ai._client = lambda api_key: _FakeClient()
+        try:
+            out = ai.analyze_meal_text("chicken burrito bowl, no sour cream", api_key="x")
+        finally:
+            ai._client = orig
+        self.assertEqual(out["calories"], 480)
+        self.assertIn("beans", out["ai_items_json"])
+
 
 class TestReminders(unittest.TestCase):
     def setUp(self):

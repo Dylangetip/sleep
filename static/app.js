@@ -614,21 +614,34 @@
       g.appendChild(card);
     });
   }
+  function aiBusy(msg) { $("#ai-overlay-msg").textContent = msg || "Asking Claude…"; $("#ai-overlay").hidden = false; }
+  function aiDone() { $("#ai-overlay").hidden = true; }
+
   function onMealSubmit(ev) {
     ev.preventDefault();
-    var fd = new FormData();
     var file = $("#meal-photo").files[0] || camBlob;
+    var notes = ($("#meal-notes").value || "").trim();
+    if (!file && !notes) {
+      return flash("meal-flash", "Add a photo or describe the meal.", "err");
+    }
+    var fd = new FormData();
     if (file) fd.append("photo", file, file.name || "camera.jpg");
     fd.append("date", $("#meal-date").value || todayISO());
     if ($("#meal-time").value) fd.append("time", $("#meal-time").value);
-    fd.append("notes", $("#meal-notes").value || "");
-    flash("meal-flash", file ? "Analyzing photo…" : "Saving…", "ok");
-    api.uploadMeal(fd).then(function () {
-      flash("meal-flash", "Saved.", "ok");
+    fd.append("notes", notes);
+    aiBusy(file ? "Analyzing your photo…" : "Estimating from your description…");
+    flash("meal-flash", "", "ok");
+    api.uploadMeal(fd).then(function (m) {
+      aiDone();
+      if (m && m.status === "failed") {
+        flash("meal-flash", "Analysis failed: " + (m.ai_description || "check your API key"), "err");
+      } else {
+        flash("meal-flash", m && m.calories != null ? ("Saved · " + m.calories + " kcal") : "Saved.", "ok");
+      }
       ev.target.reset(); camBlob = null;
       $("#meal-preview").hidden = true; $("#meal-date").value = todayISO();
       loadDiet();
-    }).catch(function (e) { flash("meal-flash", "Failed: " + (e.message || e), "err"); });
+    }).catch(function (e) { aiDone(); flash("meal-flash", "Failed: " + (e.message || e), "err"); });
   }
 
   /* ---------------- camera capture ---------------- */
@@ -853,8 +866,9 @@
         }).catch(function (e) { flash("weight-flash", "Failed: " + (e.message || e), "err"); });
       });
       $("#today-summary-refresh").addEventListener("click", function () {
+        aiBusy("Writing your daily summary…");
         $("#today-summary").textContent = "Generating…";
-        api.summary(todayISO(), true).then(function (s) { $("#today-summary").innerHTML = (s.summary || "").replace(/\n/g, "<br>"); }).catch(showErr);
+        api.summary(todayISO(), true).then(function (s) { aiDone(); $("#today-summary").innerHTML = (s.summary || "").replace(/\n/g, "<br>"); }).catch(function (e) { aiDone(); showErr(e); });
       });
       $("#key-form").addEventListener("submit", function (ev) {
         ev.preventDefault();
@@ -862,8 +876,9 @@
         api.setKey(k).then(function () { flash("key-flash", "Key saved.", "ok"); $("#api-key").value = ""; $("#key-state").textContent = "✓ key saved"; }).catch(showErr);
       });
       $("#summary-refresh").addEventListener("click", function () {
+        aiBusy("Writing your daily summary…");
         $("#daily-summary").textContent = "Generating…";
-        api.summary(todayISO(), true).then(function (s) { $("#daily-summary").innerHTML = s.summary.replace(/\n/g, "<br>"); }).catch(showErr);
+        api.summary(todayISO(), true).then(function (s) { aiDone(); $("#daily-summary").innerHTML = (s.summary || "").replace(/\n/g, "<br>"); }).catch(function (e) { aiDone(); showErr(e); });
       });
     });
 

@@ -24,6 +24,38 @@ MEAL_PROMPT = (
     "values."
 )
 
+MEAL_TEXT_PROMPT = (
+    "You are a nutrition estimator. From the following description of a meal, give "
+    "your best single estimate of total calories and grams of protein, "
+    "carbohydrates, and fat for the whole meal. Assume typical portion sizes when "
+    "the description is vague. These are estimates, not exact values.\n\nMeal: "
+)
+
+
+def _meal_schema():
+    from pydantic import BaseModel
+
+    class MealNutrition(BaseModel):
+        calories: int
+        protein_g: float
+        carbs_g: float
+        fat_g: float
+        description: str
+        items: List[str]
+
+    return MealNutrition
+
+
+def _to_result(m):
+    return {
+        "calories": m.calories,
+        "protein_g": m.protein_g,
+        "carbs_g": m.carbs_g,
+        "fat_g": m.fat_g,
+        "ai_description": m.description,
+        "ai_items_json": json.dumps(m.items),
+    }
+
 
 def _client(api_key):
     import anthropic
@@ -54,16 +86,6 @@ def _encode_image(path, max_edge=1568):
 def analyze_meal_photo(image_path, notes="", model=None, api_key=None):
     """Send a meal photo to Claude and return structured nutrition for storage:
     {calories, protein_g, carbs_g, fat_g, ai_description, ai_items_json}."""
-    from pydantic import BaseModel
-
-    class MealNutrition(BaseModel):
-        calories: int
-        protein_g: float
-        carbs_g: float
-        fat_g: float
-        description: str
-        items: List[str]
-
     client = _client(api_key)
     data = _encode_image(image_path)
     text = MEAL_PROMPT
@@ -78,17 +100,21 @@ def analyze_meal_photo(image_path, notes="", model=None, api_key=None):
                                          "media_type": "image/jpeg", "data": data}},
             {"type": "text", "text": text},
         ]}],
-        output_format=MealNutrition,
+        output_format=_meal_schema(),
     )
-    m = resp.parsed_output
-    return {
-        "calories": m.calories,
-        "protein_g": m.protein_g,
-        "carbs_g": m.carbs_g,
-        "fat_g": m.fat_g,
-        "ai_description": m.description,
-        "ai_items_json": json.dumps(m.items),
-    }
+    return _to_result(resp.parsed_output)
+
+
+def analyze_meal_text(description, model=None, api_key=None):
+    """Estimate nutrition from a text description of a meal (no photo)."""
+    client = _client(api_key)
+    resp = client.messages.parse(
+        model=model or DEFAULT_MODEL,
+        max_tokens=1024,
+        messages=[{"role": "user", "content": MEAL_TEXT_PROMPT + (description or "")}],
+        output_format=_meal_schema(),
+    )
+    return _to_result(resp.parsed_output)
 
 
 def daily_health_summary(facts_text, model=None, api_key=None):
