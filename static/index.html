@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="styles.css?v=4" />
+<link rel="stylesheet" href="styles.css?v=5" />
 </head>
 <body>
 
@@ -55,6 +55,10 @@
           <div id="today-summary" class="adherence" style="margin-top:6px"></div>
         </div>
       </div>
+    </section>
+    <section class="section">
+      <div class="section-head"><h2>Today&rsquo;s meals</h2><span class="note">Log meals on the Diet tab</span></div>
+      <div id="today-meals" class="meal-gallery"></div>
     </section>
    </div><!-- /tab-today -->
 
@@ -333,14 +337,14 @@
     </section>
 
     <section class="section">
-      <div class="section-head"><h2>Today&rsquo;s meals</h2><span class="note">Tap a photo to enlarge</span></div>
+      <div class="section-head"><h2>Meal history</h2><span class="note">Most recent 30</span></div>
       <div id="meal-gallery" class="meal-gallery"></div>
     </section>
    </div><!-- /tab-diet -->
 
    <!-- ================= ACTIVITY ================= -->
    <div id="tab-activity" class="tab" hidden>
-    <section class="section"><div class="section-head"><h2>Today&rsquo;s movement</h2><span class="note">All-day, from Garmin</span></div>
+    <section class="section"><div class="section-head"><h2>Movement &middot; last 7 days</h2><span class="note">All-day, from Garmin</span></div>
       <div id="movement-stats" class="stat-row"></div>
     </section>
     <section class="section">
@@ -410,6 +414,6 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 
   <!-- frontend app — talks to the real FastAPI backend over /api/* -->
-  <script src="app.js?v=4"></script>
+  <script src="app.js?v=5"></script>
 </body>
 </html>
